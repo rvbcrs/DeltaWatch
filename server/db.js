@@ -22,6 +22,9 @@ function initDb() {
             last_check DATETIME,
             last_value TEXT,
             last_change DATETIME,
+            last_screenshot TEXT,
+            type TEXT DEFAULT 'text',
+            name TEXT,
             active BOOLEAN DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`, (err) => {
@@ -36,8 +39,36 @@ function initDb() {
                     console.log('Migrating: Adding active column to monitors table...');
                     db.run("ALTER TABLE monitors ADD COLUMN active BOOLEAN DEFAULT 1");
                 }
+                const hasScreenshot = rows.some(r => r.name === 'last_screenshot');
+                if (!hasScreenshot) {
+                    console.log('Migrating: Adding last_screenshot column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN last_screenshot TEXT");
+                }
+                const hasType = rows.some(r => r.name === 'type');
+                if (!hasType) {
+                    console.log('Migrating: Adding type column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN type TEXT DEFAULT 'text'");
+                }
+                const hasName = rows.some(r => r.name === 'name');
+                if (!hasName) {
+                    console.log('Migrating: Adding name column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN name TEXT");
+                }
             } else {
                 console.error("Error checking table info:", err);
+            }
+        });
+
+        // Migration: Add screenshot columns to check_history
+        db.all("PRAGMA table_info(check_history)", (err, rows) => {
+            if (!err) {
+                const hasScreenshot = rows.some(r => r.name === 'screenshot_path');
+                if (!hasScreenshot) {
+                    console.log('Migrating: Adding screenshot columns to check_history...');
+                    db.run("ALTER TABLE check_history ADD COLUMN screenshot_path TEXT");
+                    db.run("ALTER TABLE check_history ADD COLUMN prev_screenshot_path TEXT");
+                    db.run("ALTER TABLE check_history ADD COLUMN diff_screenshot_path TEXT");
+                }
             }
         });
 
@@ -75,6 +106,18 @@ function initDb() {
         // Insert default row if not exists
         db.run(`INSERT OR IGNORE INTO settings (id, email_enabled, push_enabled) VALUES (1, 0, 0)`, (err) => {
             if (err) console.error("Error inserting default settings:", err);
+        });
+        // Migration: Add value column to check_history if it doesn't exist
+        db.all("PRAGMA table_info(check_history)", (err, rows) => {
+            if (!err) {
+                const hasValue = rows.some(r => r.name === 'value');
+                if (!hasValue) {
+                    console.log('Migrating: Adding value column to check_history table...');
+                    db.run("ALTER TABLE check_history ADD COLUMN value TEXT");
+                }
+            } else {
+                console.error("Error checking check_history table info:", err);
+            }
         });
     });
 }

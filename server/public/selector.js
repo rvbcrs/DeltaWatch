@@ -71,6 +71,16 @@
                 el.classList.add('wachet-selected');
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
+        } else if (type === 'set_mode') {
+            active = payload.active;
+            console.log(`Selector mode set to: ${active ? 'Active' : 'Inactive'}`);
+            if (!active) {
+                // Clear hover styles when deactivating
+                if (hoveredElement) {
+                    hoveredElement.classList.remove('wachet-hover');
+                    hoveredElement = null;
+                }
+            }
         }
     });
 

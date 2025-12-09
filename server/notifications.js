@@ -51,14 +51,14 @@ function getSettings() {
     });
 }
 
-async function sendNotification(subject, message) {
+async function sendNotification(subject, message, htmlMessage = null) {
     try {
         const settings = await getSettings();
 
         const promises = [];
 
         if (settings.email_enabled) {
-            promises.push(sendEmail(settings, subject, message));
+            promises.push(sendEmail(settings, subject, message, htmlMessage));
         }
 
         if (settings.push_enabled) {
@@ -72,7 +72,7 @@ async function sendNotification(subject, message) {
     }
 }
 
-async function sendEmail(settings, subject, text) {
+async function sendEmail(settings, subject, text, html = null) {
     console.log(`Sending Email: ${subject}`);
     try {
         const transporter = nodemailer.createTransport({
@@ -89,7 +89,8 @@ async function sendEmail(settings, subject, text) {
             from: settings.email_user, // or specific from address
             to: settings.email_to,
             subject: subject,
-            text: text
+            text: text,
+            html: html || text.replace(/\n/g, '<br>') // Fallback to basic HTML if no custom HTML provided
         });
         console.log("Email sent successfully");
     } catch (e) {

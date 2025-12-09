@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Save, Bell } from 'lucide-react'
+import { Save, Bell, Mail, Smartphone, Globe, ArrowLeft } from 'lucide-react';
+import { useToast } from './contexts/ToastContext';
 import { useNavigate } from 'react-router-dom'
 
 function Settings() {
     const navigate = useNavigate();
+    const [loading, setLoading] = useState(true);
+    const { showToast } = useToast();
     const [settings, setSettings] = useState({
         email_enabled: false,
         email_host: '',
@@ -50,13 +53,14 @@ function Settings() {
                 body: JSON.stringify(settings)
             });
             const data = await res.json();
-            if (data.message === 'success') {
-                alert('Settings saved!');
+            if (res.ok) {
+                showToast('Settings saved successfully', 'success');
             } else {
-                alert('Error saving settings');
+                showToast('Failed to save settings', 'error');
             }
         } catch (e) {
-            alert('Error: ' + e.message);
+            console.error(e);
+            showToast('Error saving settings', 'error');
         }
     };
     
@@ -76,17 +80,18 @@ function Settings() {
             const res = await fetch('http://localhost:3000/test-notification', { method: 'POST' });
             const data = await res.json();
             if (data.message === 'success') {
-                alert('Test notification sent! Check your inbox/app.');
+                showToast('Test notification sent! Check your inbox/app.', 'success');
             } else {
-                alert('Test functionality failed: ' + (data.error || 'Unknown error'));
+                showToast('Test functionality failed: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
-            alert('Error: ' + e.message);
+            console.error(e);
+            showToast('Error: ' + e.message, 'error');
         }
     };
 
     return (
-        <div className="flex h-screen w-screen bg-[#0d1117] flex-col text-white">
+        <div className="flex h-full w-full bg-[#0d1117] flex-col text-white">
             <header className="bg-[#161b22] p-4 shadow-md flex items-center justify-between z-10 sticky top-0 border-b border-gray-800">
                 <div className="flex items-center space-x-4 w-full max-w-6xl mx-auto">
                     <button onClick={() => navigate('/')} className="text-gray-400 hover:text-white transition-colors">

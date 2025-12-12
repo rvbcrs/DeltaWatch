@@ -14,6 +14,7 @@ app.use(express.json());
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
 const db = require('./db');
+const { summarizeChange, getModels } = require('./ai');
 // Serve static files (like the selector script)
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
@@ -28,7 +29,7 @@ app.get('/monitors', (req, res) => {
         const monitorsWithHistory = await Promise.all(monitors.map(async (monitor) => {
             return new Promise((resolve, reject) => {
                 db.all(
-                    "SELECT id, status, created_at, value, screenshot_path, prev_screenshot_path, diff_screenshot_path FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC LIMIT 20",
+                    "SELECT id, status, created_at, value, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC LIMIT 20",
                     [monitor.id],
                     (err, history) => {
                         if (err) resolve({ ...monitor, history: [] }); // Fail gracefully
@@ -46,7 +47,7 @@ app.get('/monitors', (req, res) => {
 });
 
 app.post('/monitors', (req, res) => {
-    const { url, selector, selector_text, interval, type, name } = req.body;
+    const { url, selector, selector_text, interval, type, name, notify_config } = req.body;
     if (!url || !interval) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -57,8 +58,8 @@ app.post('/monitors', (req, res) => {
         return res.status(400).json({ error: 'Missing selector for text monitor' });
     }
 
-    const sql = 'INSERT INTO monitors (url, selector, selector_text, interval, type, name) VALUES (?,?,?,?,?,?)';
-    const params = [url, finalSelector, selector_text, interval, type || 'text', name || ''];
+    const sql = 'INSERT INTO monitors (url, selector, selector_text, interval, type, name, notify_config) VALUES (?,?,?,?,?,?,?)';
+    const params = [url, finalSelector, selector_text, interval, type || 'text', name || '', notify_config ? JSON.stringify(notify_config) : null];
 
     db.run(sql, params, function (err, result) {
         if (err) {
@@ -134,7 +135,7 @@ app.post('/monitors/:id/check', (req, res) => {
 });
 
 app.put('/monitors/:id', (req, res) => {
-    const { url, selector, selector_text, interval, last_value, type, name } = req.body;
+    const { url, selector, selector_text, interval, last_value, type, name, notify_config } = req.body;
     db.run(
         `UPDATE monitors set 
            url = COALESCE(?, url), 
@@ -143,9 +144,10 @@ app.put('/monitors/:id', (req, res) => {
            interval = COALESCE(?, interval),
            last_value = COALESCE(?, last_value),
            type = COALESCE(?, type),
-           name = COALESCE(?, name)
+           name = COALESCE(?, name),
+           notify_config = COALESCE(?, notify_config)
            WHERE id = ?`,
-        [url, selector, selector_text, interval, last_value, type, name, req.params.id],
+        [url, selector, selector_text, interval, last_value, type, name, notify_config ? JSON.stringify(notify_config) : null, req.params.id],
         function (err, result) {
             if (err) {
                 res.status(400).json({ "error": res.message })
@@ -154,6 +156,23 @@ app.put('/monitors/:id', (req, res) => {
             res.json({
                 message: "success",
                 data: req.body,
+                changes: this.changes
+            })
+        });
+});
+
+app.patch('/monitors/:id/status', (req, res) => {
+    const { active } = req.body;
+    db.run(
+        'UPDATE monitors SET active = ? WHERE id = ?',
+        [active ? 1 : 0, req.params.id],
+        function (err) {
+            if (err) {
+                res.status(400).json({ "error": err.message })
+                return;
+            }
+            res.json({
+                message: "success",
                 changes: this.changes
             })
         });
@@ -305,17 +324,23 @@ app.get('/settings', (req, res) => {
 app.put('/settings', (req, res) => {
     const {
         email_enabled, email_host, email_port, email_secure, email_user, email_pass, email_to,
-        push_enabled, push_type, push_key1, push_key2
+        push_enabled, push_type, push_key1, push_key2,
+        ai_enabled, ai_provider, ai_api_key, ai_model, ai_base_url,
+        proxy_enabled, proxy_server, proxy_auth
     } = req.body;
 
     db.run(
         `UPDATE settings SET 
             email_enabled = ?, email_host = ?, email_port = ?, email_secure = ?, email_user = ?, email_pass = ?, email_to = ?,
-            push_enabled = ?, push_type = ?, push_key1 = ?, push_key2 = ?
+            push_enabled = ?, push_type = ?, push_key1 = ?, push_key2 = ?,
+            ai_enabled = ?, ai_provider = ?, ai_api_key = ?, ai_model = ?, ai_base_url = ?,
+            proxy_enabled = ?, proxy_server = ?, proxy_auth = ?
         WHERE id = 1`,
         [
             email_enabled, email_host, email_port, email_secure, email_user, email_pass, email_to,
-            push_enabled, push_type, push_key1, push_key2
+            push_enabled, push_type, push_key1, push_key2,
+            ai_enabled, ai_provider, ai_api_key, ai_model, ai_base_url,
+            proxy_enabled, proxy_server, proxy_auth
         ],
         (err) => {
             if (err) {
@@ -341,6 +366,87 @@ app.post('/test-notification', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+
+// Export monitors
+app.get('/data/export', (req, res) => {
+    db.all("SELECT * FROM monitors", [], (err, rows) => {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', 'attachment; filename="monitors.json"');
+        res.send(JSON.stringify(rows, null, 2));
+    });
+});
+
+app.post('/api/models', async (req, res) => {
+    const { provider, apiKey, baseUrl } = req.body;
+    try {
+        const models = await getModels(provider, apiKey, baseUrl);
+        res.json({ message: 'success', data: models });
+    } catch (e) {
+        console.error("Model fetch error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Import monitors
+app.post('/data/import', (req, res) => {
+    const monitors = req.body;
+    if (!Array.isArray(monitors)) {
+        return res.status(400).json({ error: 'Invalid data format. Expected an array of monitors.' });
+    }
+
+    let importedCount = 0;
+    let errorCount = 0;
+
+    const insertMonitor = (monitor) => {
+        return new Promise((resolve) => {
+            const { url, selector, selector_text, interval, type, name } = monitor;
+            // Check if exists based on URL and Selector combination
+            db.get("SELECT id FROM monitors WHERE url = ? AND selector = ?", [url, selector], (err, row) => {
+                if (err) {
+                    errorCount++;
+                    resolve();
+                } else if (row) {
+                    // Already exists, skip
+                    resolve();
+                } else {
+                    db.run(
+                        "INSERT INTO monitors (url, selector, selector_text, interval, type, name) VALUES (?,?,?,?,?,?)",
+                        [url, selector, selector_text, interval, type || 'text', name || ''],
+                        (err) => {
+                            if (!err) importedCount++;
+                            else errorCount++;
+                            resolve();
+                        }
+                    );
+                }
+            });
+        });
+    };
+
+    Promise.all(monitors.map(insertMonitor)).then(() => {
+        res.json({ message: 'success', imported: importedCount, errors: errorCount });
+    });
+});
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, '../client/dist')));
+
+// The "catchall" handler: for any request that doesn't
+// match one above, send back React's index.html file.
+app.get(/.*/, (req, res) => {
+    // Check if we are in development mode (where dist might not exist)
+    if (fs.existsSync(path.join(__dirname, '../client/dist/index.html'))) {
+        res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+    } else {
+        res.status(404).send('Client not built or in development mode. Use Vite dev server.');
+    }
+});
+
+
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);

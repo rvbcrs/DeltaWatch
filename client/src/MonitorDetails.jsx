@@ -9,6 +9,7 @@ import { useDialog } from './contexts/DialogContext';
 function MonitorDetails() {
     const { id } = useParams();
     const navigate = useNavigate();
+    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
     const [monitor, setMonitor] = useState(null);
     const [loading, setLoading] = useState(true);
     const [isChecking, setIsChecking] = useState(false);
@@ -19,7 +20,7 @@ function MonitorDetails() {
     const fetchMonitor = async (silent = false) => {
         if (!silent) setLoading(true);
         try {
-            const res = await fetch(`http://localhost:3000/monitors?t=${Date.now()}`);
+            const res = await fetch(`${API_BASE}/monitors?t=${Date.now()}`);
             if (res.ok) {
                  const data = await res.json();
                  if (data.message === 'success') {
@@ -71,7 +72,7 @@ function MonitorDetails() {
         
         console.log('Details: Sending request...');
         try {
-            const res = await fetch(`http://localhost:3000/monitors/${id}/check`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/monitors/${id}/check`, { method: 'POST' });
             console.log('Details: Response status:', res.status);
             if (res.ok) {
                  showToast('Check completed successfully', 'success');
@@ -98,7 +99,7 @@ function MonitorDetails() {
         }
         
         try {
-            const res = await fetch(`http://localhost:3000/monitors/${id}/history/${historyId}`, {
+            const res = await fetch(`${API_BASE}/monitors/${id}/history/${historyId}`, {
                 method: 'DELETE',
             });
             if (res.ok) {
@@ -119,6 +120,8 @@ function MonitorDetails() {
 
     if (loading) return <div className="p-8 text-center text-gray-500">Loading details...</div>;
     if (!monitor) return <div className="p-8 text-center text-red-500">Monitor not found</div>;
+
+    const showGraph = monitor.type !== 'visual' && monitor.selector !== 'body' && history.some(h => h.value !== null);
 
     return (
         <div className="flex h-full flex-col bg-[#0d1117] text-white p-6 overflow-y-auto">
@@ -152,7 +155,7 @@ function MonitorDetails() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Stats Card */}
-                <div className="lg:col-span-1 space-y-6">
+                <div className={`${showGraph ? 'lg:col-span-1' : 'lg:col-span-3'} space-y-6`}>
                     <div className="bg-[#161b22] p-6 rounded-lg border border-gray-800">
                         <h3 className="text-gray-400 text-sm font-medium mb-4 uppercase tracking-wider">Current Status</h3>
                         
@@ -182,7 +185,7 @@ function MonitorDetails() {
                 </div>
 
                 {/* Graph Card */}
-                {monitor.type !== 'visual' && monitor.selector !== 'body' && (
+                {showGraph && (
                 <div className="lg:col-span-2 bg-[#161b22] p-6 rounded-lg border border-gray-800 flex flex-col">
                      <h3 className="text-gray-400 text-sm font-medium mb-4 uppercase tracking-wider">Value History</h3>
                      <div className="flex-1 min-h-[300px]">
@@ -257,10 +260,21 @@ function MonitorDetails() {
                                             <div className="flex items-start gap-2 text-red-400">
                                                 <div className="w-0.5 self-stretch bg-red-500 rounded-full mr-1"></div>
                                                 <p className="font-medium">{record.value || "The server returned an error response"}</p>
-                                                <p className="font-medium">{record.value || "The server returned an error response"}</p>
                                             </div>
                                         ) : (
                                             <div className="text-gray-300">
+                                                {/* AI Summary Display */}
+                                                {record.ai_summary && (
+                                                    <div className="mb-3 p-3 bg-purple-900/20 border border-purple-900/50 rounded-md">
+                                                        <div className="flex items-center gap-2 text-purple-400 text-xs font-bold uppercase tracking-wider mb-1">
+                                                            <span className="text-lg">🤖</span> AI Summary
+                                                        </div>
+                                                        <p className="text-sm text-purple-100 italic">
+                                                            {record.ai_summary}
+                                                        </p>
+                                                    </div>
+                                                )}
+
                                                 {monitor.type === 'visual' ? (
                                                     <div className="space-y-4">
                                                         {record.screenshot_path ? (
@@ -270,9 +284,9 @@ function MonitorDetails() {
                                                                         <span className="text-xs text-gray-500 mb-1 block uppercase tracking-wider">Before</span>
                                                                         <div 
                                                                             className="w-48 h-32 bg-gray-900 rounded border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 transition-colors"
-                                                                            onClick={() => window.open(`http://localhost:3000/static/screenshots/${record.prev_screenshot_path.split('/').pop()}`, '_blank')}
+                                                                            onClick={() => window.open(`${API_BASE}/static/screenshots/${record.prev_screenshot_path.split('/').pop()}`, '_blank')}
                                                                         >
-                                                                            <img src={`http://localhost:3000/static/screenshots/${record.prev_screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
+                                                                            <img src={`${API_BASE}/static/screenshots/${record.prev_screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
                                                                         </div>
                                                                     </div>
                                                                 )}
@@ -280,9 +294,9 @@ function MonitorDetails() {
                                                                     <span className="text-xs text-gray-500 mb-1 block uppercase tracking-wider">After</span>
                                                                     <div 
                                                                         className="w-48 h-32 bg-gray-900 rounded border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 transition-colors"
-                                                                        onClick={() => window.open(`http://localhost:3000/static/screenshots/${record.screenshot_path.split('/').pop()}`, '_blank')}
+                                                                        onClick={() => window.open(`${API_BASE}/static/screenshots/${record.screenshot_path.split('/').pop()}`, '_blank')}
                                                                     >
-                                                                        <img src={`http://localhost:3000/static/screenshots/${record.screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
+                                                                        <img src={`${API_BASE}/static/screenshots/${record.screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
                                                                     </div>
                                                                 </div>
                                                                  {record.diff_screenshot_path && (
@@ -290,9 +304,9 @@ function MonitorDetails() {
                                                                         <span className="text-xs text-gray-500 mb-1 block uppercase tracking-wider">Diff</span>
                                                                         <div 
                                                                             className="w-48 h-32 bg-gray-900 rounded border border-gray-700 overflow-hidden cursor-pointer hover:border-blue-500 transition-colors"
-                                                                            onClick={() => window.open(`http://localhost:3000/static/screenshots/${record.diff_screenshot_path.split('/').pop()}`, '_blank')}
+                                                                            onClick={() => window.open(`${API_BASE}/static/screenshots/${record.diff_screenshot_path.split('/').pop()}`, '_blank')}
                                                                         >
-                                                                            <img src={`http://localhost:3000/static/screenshots/${record.diff_screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
+                                                                            <img src={`${API_BASE}/static/screenshots/${record.diff_screenshot_path.split('/').pop()}`} className="w-full h-full object-cover" />
                                                                         </div>
                                                                     </div>
                                                                 )}

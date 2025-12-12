@@ -1,7 +1,13 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 
-const dbPath = path.join(__dirname, 'monitors.db');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+}
+
+const dbPath = path.join(dataDir, 'monitors.db');
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error('Error opening database', err.message);
@@ -26,6 +32,7 @@ function initDb() {
             type TEXT DEFAULT 'text',
             name TEXT,
             active BOOLEAN DEFAULT 1,
+            notify_config TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`, (err) => {
             if (err) console.error("Error creating monitors table:", err);
@@ -53,6 +60,16 @@ function initDb() {
                 if (!hasName) {
                     console.log('Migrating: Adding name column to monitors table...');
                     db.run("ALTER TABLE monitors ADD COLUMN name TEXT");
+                }
+                const hasNotifyConfig = rows.some(r => r.name === 'notify_config');
+                if (!hasNotifyConfig) {
+                    console.log('Migrating: Adding notify_config column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN notify_config TEXT");
+                }
+                const hasAiPrompt = rows.some(r => r.name === 'ai_prompt');
+                if (!hasAiPrompt) {
+                    console.log('Migrating: Adding ai_prompt column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN ai_prompt TEXT");
                 }
             } else {
                 console.error("Error checking table info:", err);
@@ -86,6 +103,16 @@ function initDb() {
             push_type TEXT,
             push_key1 TEXT,
             push_key2 TEXT,
+
+            ai_enabled BOOLEAN DEFAULT 0,
+            ai_provider TEXT,
+            ai_api_key TEXT,
+            ai_model TEXT,
+            ai_base_url TEXT,
+
+            proxy_enabled BOOLEAN DEFAULT 0,
+            proxy_server TEXT,
+            proxy_auth TEXT,
             
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`, (err) => {
@@ -98,6 +125,11 @@ function initDb() {
             status TEXT, -- 'unchanged', 'changed', 'error'
             response_time INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            screenshot_path TEXT,
+            prev_screenshot_path TEXT,
+            diff_screenshot_path TEXT,
+            value TEXT,
+            ai_summary TEXT,
             FOREIGN KEY(monitor_id) REFERENCES monitors(id)
         )`, (err) => {
             if (err) console.error("Error creating check_history table:", err);
@@ -115,8 +147,37 @@ function initDb() {
                     console.log('Migrating: Adding value column to check_history table...');
                     db.run("ALTER TABLE check_history ADD COLUMN value TEXT");
                 }
+                const hasAiSummary = rows.some(r => r.name === 'ai_summary');
+                if (!hasAiSummary) {
+                    console.log('Migrating: Adding ai_summary column to check_history table...');
+                    db.run("ALTER TABLE check_history ADD COLUMN ai_summary TEXT");
+                }
             } else {
                 console.error("Error checking check_history table info:", err);
+            }
+        });
+
+        // Migration: Add AI and Proxy columns to settings
+        db.all("PRAGMA table_info(settings)", (err, rows) => {
+            if (!err) {
+                const hasAi = rows.some(r => r.name === 'ai_enabled');
+                if (!hasAi) {
+                    console.log('Migrating: Adding AI columns to settings table...');
+                    db.run("ALTER TABLE settings ADD COLUMN ai_enabled BOOLEAN DEFAULT 0");
+                    db.run("ALTER TABLE settings ADD COLUMN ai_provider TEXT");
+                    db.run("ALTER TABLE settings ADD COLUMN ai_api_key TEXT");
+                    db.run("ALTER TABLE settings ADD COLUMN ai_model TEXT");
+                    db.run("ALTER TABLE settings ADD COLUMN ai_base_url TEXT");
+                }
+                const hasProxy = rows.some(r => r.name === 'proxy_enabled');
+                if (!hasProxy) {
+                    console.log('Migrating: Adding Proxy columns to settings table...');
+                    db.run("ALTER TABLE settings ADD COLUMN proxy_enabled BOOLEAN DEFAULT 0");
+                    db.run("ALTER TABLE settings ADD COLUMN proxy_server TEXT");
+                    db.run("ALTER TABLE settings ADD COLUMN proxy_auth TEXT");
+                }
+            } else {
+                console.error("Error checking settings table info:", err);
             }
         });
     });

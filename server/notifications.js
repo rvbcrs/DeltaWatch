@@ -1,3 +1,5 @@
+const fs = require('fs');
+const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const db = require('./db');
 // import fetch from 'node-fetch'; // If needed for older Node, but usually global fetch in 18+ or generic https
@@ -51,7 +53,7 @@ function getSettings() {
     });
 }
 
-async function sendNotification(subject, message, htmlMessage = null) {
+async function sendNotification(subject, message, htmlMessage = null, diff = null, imagePath = null) {
     try {
         const settings = await getSettings();
 
@@ -62,7 +64,7 @@ async function sendNotification(subject, message, htmlMessage = null) {
         }
 
         if (settings.push_enabled) {
-            promises.push(sendPush(settings, message));
+            promises.push(sendPush(settings, message, diff, imagePath));
         }
 
         await Promise.allSettled(promises);
@@ -99,21 +101,43 @@ async function sendEmail(settings, subject, text, html = null) {
     }
 }
 
-async function sendPush(settings, message) {
+async function sendPush(settings, message, diff = null, imagePath = null) {
     console.log(`Sending Push: ${settings.push_type}`);
     try {
         if (settings.push_type === 'pushover') {
-            // https://pushover.net/api
-            const body = new URLSearchParams({
-                token: settings.push_key1, // App Token
-                user: settings.push_key2,  // User Key
-                message: message
-            }).toString();
+            const form = new FormData();
+            form.append('token', settings.push_key1);
+            form.append('user', settings.push_key2);
 
-            await sendRequest('https://api.pushover.net/1/messages.json', 'POST', {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Content-Length': Buffer.byteLength(body)
-            }, body);
+            let finalMessage = message;
+            // Only append text diff if NO image is provided
+            if (diff && !imagePath) {
+                finalMessage += "\n\n<pre>" + diff + "</pre>";
+            }
+            form.append('message', finalMessage);
+            form.append('html', '1');
+
+            if (imagePath && fs.existsSync(imagePath)) {
+                console.log(`Attaching image to Pushover: ${imagePath}`);
+                form.append('attachment', fs.createReadStream(imagePath));
+            }
+
+            await new Promise((resolve, reject) => {
+                form.submit('https://api.pushover.net/1/messages.json', (err, res) => {
+                    if (err) {
+                        console.error('Pushover Submit Error:', err);
+                        reject(err);
+                        return;
+                    }
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        res.resume(); // Consume response data to free up memory
+                        resolve();
+                    } else {
+                        res.resume();
+                        reject(new Error(`Pushover API returned status ${res.statusCode}`));
+                    }
+                });
+            });
 
         } else if (settings.push_type === 'telegram') {
             // https://core.telegram.org/bots/api#sendmessage
@@ -121,9 +145,15 @@ async function sendPush(settings, message) {
             const chatId = settings.push_key2;
             const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
 
+            let finalMessage = message;
+            if (diff) {
+                finalMessage += "\n\n<pre>" + diff + "</pre>";
+            }
+
             const body = JSON.stringify({
                 chat_id: chatId,
-                text: message
+                text: finalMessage,
+                parse_mode: 'HTML' // Enable HTML for Telegram too
             });
 
             await sendRequest(url, 'POST', {

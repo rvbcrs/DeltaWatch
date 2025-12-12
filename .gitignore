@@ -1,1 +1,7 @@
 node_modules
+client/node_modules
+server/node_modules
+server/data/monitors.db
+server/public/screenshots
+server/*.png
+*.tar

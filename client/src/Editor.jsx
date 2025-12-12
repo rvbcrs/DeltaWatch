@@ -2,11 +2,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useToast } from './contexts/ToastContext';
-import { ArrowLeft, Save, Play, Image, FileText, Check, AlertCircle, MousePointerClick } from 'lucide-react';
+import { ArrowLeft, Save, Play, Image, FileText, Check, AlertCircle, MousePointerClick, Bell, Brain } from 'lucide-react';
 // import Layout from './Layout'; // REMOVED
 
 function Editor() {
   console.log("Editor Component Loaded - Cache Bust");
+  const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
   const [url, setUrl] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
   const [selectedElement, setSelectedElement] = useState(null)
@@ -19,18 +20,20 @@ function Editor() {
   const [isSelecting, setIsSelecting] = useState(true); // Default to selection mode
 
   const [name, setName] = useState('')
+  const [notifyConfig, setNotifyConfig] = useState({ method: 'all', threshold: '' });
+  const [aiPrompt, setAiPrompt] = useState('');
 
   useEffect(() => {
     if (id) {
         // Fetch existing monitor
-        fetch(`http://localhost:3000/monitors/${id}`)
+        fetch(`${API_BASE}/monitors/${id}`)
             .then(res => res.json())
             .then(data => {
                 if (data.data) {
                     const monitor = data.data;
                     setName(monitor.name || '');
                     setUrl(monitor.url);
-                    setProxyUrl(`http://localhost:3000/proxy?url=${encodeURIComponent(monitor.url)}`);
+                    setProxyUrl(`${API_BASE}/proxy?url=${encodeURIComponent(monitor.url)}`);
                     if (monitor.selector) {
                         setSelectedElement({
                             selector: monitor.selector,
@@ -39,6 +42,12 @@ function Editor() {
                     }
                     setInterval(monitor.interval);
                     setMonitorType(monitor.type || 'text');
+                    try {
+                        if (monitor.notify_config) {
+                            setNotifyConfig(typeof monitor.notify_config === 'string' ? JSON.parse(monitor.notify_config) : monitor.notify_config);
+                        }
+                    } catch (e) { console.error(e); }
+                    setAiPrompt(monitor.ai_prompt || '');
                 }
             })
             .catch(err => alert('Failed to load monitor'));
@@ -85,7 +94,7 @@ function Editor() {
     // but we can at least show loading while the user waits for the initial "Go" action?
     // Actually, setting state is instant. The iframe load is what takes time.
     // We can add an onLoad handler to the iframe to clear loading state.
-    const target = `http://localhost:3000/proxy?url=${encodeURIComponent(url)}`;
+    const target = `${API_BASE}/proxy?url=${encodeURIComponent(url)}`;
     setProxyUrl(target);
   }
 
@@ -100,7 +109,7 @@ function Editor() {
         const urlParams = id ? `/${id}` : '';
         const method = id ? 'PUT' : 'POST';
         
-        const response = await fetch(`http://localhost:3000/monitors${urlParams}`, {
+        const response = await fetch(`${API_BASE}/monitors${urlParams}`, {
             method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -109,7 +118,9 @@ function Editor() {
                 selector: monitorType === 'text' ? selectedElement.selector : '',
                 selector_text: monitorType === 'text' ? selectedElement.text : '',
                 interval,
-                type: monitorType
+                type: monitorType,
+                notify_config: notifyConfig,
+                ai_prompt: aiPrompt
             })
         });
         const data = await response.json();
@@ -128,8 +139,7 @@ function Editor() {
   // Effect to highlight element when iframe loads
   useEffect(() => {
      if (proxyUrl && selectedElement && id && monitorType === 'text') {
-         // We need to wait for iframe to load, but we can't easily hook into onLoad for cross-origin (even proxied)
-         // We'll just retry sending the message a few times
+         // Only highlight on initial load/url change, not on every selection change
          const timer = setTimeout(() => {
              const iframe = document.querySelector('iframe');
              if (iframe && iframe.contentWindow) {
@@ -138,10 +148,10 @@ function Editor() {
                      payload: selectedElement.selector
                  }, '*');
              }
-         }, 2000); // 2 seconds delay
+         }, 2000); 
          return () => clearTimeout(timer);
      }
-  }, [proxyUrl, selectedElement, id, monitorType]);
+  }, [proxyUrl, id]); // Removed selectedElement to prevent echo loop
 
   const getUiMode = () => {
     if (monitorType === 'visual') return 'visual';
@@ -155,118 +165,180 @@ function Editor() {
   return (
     <div className="flex h-screen w-full bg-[#0d1117] flex-col text-white">
       <header className="bg-[#161b22] p-4 shadow-md flex flex-col space-y-4 z-30 relative border-b border-gray-800">
-        <div className="flex items-center justify-between w-full max-w-6xl mx-auto">
-             <div className="flex items-center space-x-4 w-full">
+        <div className="flex flex-col md:flex-row items-center justify-between w-full max-w-6xl mx-auto gap-4">
+             {/* Left: Back + Title */}
+             <div className="flex items-center w-full md:w-auto gap-4">
                <button onClick={() => navigate('/')} className="text-gray-400 hover:text-white transition-colors">
                   <ArrowLeft />
                </button>
                <h1 className="text-xl font-bold text-white shadow-sm whitespace-nowrap">
                   {id ? 'Edit Monitor' : 'New Monitor'}
                </h1>
-               
+             </div>
+             
+             {/* Right: Controls */}
+             <div className="flex flex-col md:flex-row items-center w-full gap-4 md:flex-1 md:justify-end flex-wrap">
                {/* Mode Switcher */}
-               <div className="flex bg-[#0d1117] rounded-lg p-1 border border-gray-700">
+               <div className="flex bg-[#0d1117] rounded-lg p-1 border border-gray-700 w-full md:w-auto justify-center">
                    <button 
                        onClick={() => { setMonitorType('visual'); setSelectedElement(null); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all ${getUiMode() === 'visual' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
+                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'visual' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
                    >
                        <Image size={16} className="inline-block mr-1" /> Visual
                    </button>
                    <button 
                        onClick={() => { setMonitorType('text'); setSelectedElement(null); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all ${getUiMode() === 'text_element' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
+                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'text_element' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
                    >
-                       <MousePointerClick size={16} className="inline-block mr-1" /> Text (Element)
+                       <MousePointerClick size={16} className="inline-block mr-1" /> Element
                    </button>
                    <button 
                        onClick={() => { setMonitorType('text'); setSelectedElement({ selector: 'body', text: 'Full Page Text' }); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all ${getUiMode() === 'text_page' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
+                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'text_page' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
                    >
-                       <FileText size={16} className="inline-block mr-1" /> Text (Page)
+                       <FileText size={16} className="inline-block mr-1" /> Page
                    </button>
                </div>
 
                <input 
                  type="text" 
                  placeholder="Name (optional)" 
-                 className="p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600 w-48"
+                 className="p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600 w-full md:w-48"
                  value={name}
                  onChange={(e) => setName(e.target.value)}
                />
 
-               <input 
-                 type="text" 
-                 placeholder="Enter URL to monitor..." 
-                 className="flex-1 p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600"
-                 value={url}
-                 onChange={(e) => setUrl(e.target.value)}
-                 onKeyDown={(e) => e.key === 'Enter' && handleGo()}
-               />
-               <button 
-                 onClick={handleGo}
-                 disabled={isLoading}
-                 className={`px-6 py-2 rounded font-medium transition flex items-center gap-2 ${isLoading ? 'bg-gray-600 cursor-not-allowed' : 'bg-[#1f6feb] hover:bg-blue-600 text-white'}`}
-               >
-                 {isLoading ? (
-                     <>
+               <div className="flex w-full md:w-auto md:flex-1 gap-2 min-w-0">
+                   <input 
+                     type="text" 
+                     placeholder="Enter URL to monitor..." 
+                     className="flex-1 p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600 min-w-0"
+                     value={url}
+                     onChange={(e) => setUrl(e.target.value)}
+                     onKeyDown={(e) => e.key === 'Enter' && handleGo()}
+                   />
+                   <button 
+                     onClick={handleGo}
+                     disabled={isLoading}
+                     className={`px-6 py-2 rounded font-medium transition flex items-center justify-center gap-2 ${isLoading ? 'bg-gray-600 cursor-not-allowed' : 'bg-[#1f6feb] hover:bg-blue-600 text-white'}`}
+                   >
+                     {isLoading ? (
                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                         Loading...
-                     </>
-                 ) : 'Go'}
-               </button>
+                     ) : 'Go'}
+                   </button>
+               </div>
              </div>
         </div>
         
         {/* Helper Text */}
-        <div className="w-full max-w-6xl mx-auto flex items-center justify-between text-sm text-gray-400">
-            <div>
+        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-400 gap-4">
+            <div className="w-full md:w-auto">
                 {monitorType === 'text' ? (
-                    <div className="flex items-center justify-between w-full">
+                    <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full">
                         <p className="text-gray-400 text-sm flex items-center gap-2">
                             <span className="bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded text-xs uppercase font-bold tracking-wider">Tip</span>
-                            {isSelecting ? "Click any element to select it." : "Interact with the page (click buttons, navigate)."}
+                            {isSelecting ? "Click any element." : "Interact with page."}
                         </p>
                         
-                        <div className="flex bg-[#21262d] rounded-lg p-1">
+                        <div className="flex bg-[#21262d] rounded-lg p-1 overflow-x-auto max-w-full">
+                            {/* Clear Button */}
+                            <button 
+                                onClick={() => {
+                                    setSelectedElement(null);
+                                    const iframe = document.querySelector('iframe');
+                                    if (iframe && iframe.contentWindow) {
+                                        iframe.contentWindow.postMessage({ type: 'clear' }, '*');
+                                    }
+                                }}
+                                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-all mr-2 border-r border-gray-700 pr-3"
+                                title="Clear Selection"
+                            >
+                                <span className="font-bold">×</span> Clear
+                            </button>
+
                             <button 
                                 onClick={() => setIsSelecting(true)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
                             >
                                 <MousePointerClick size={14} />
-                                Select Mode
+                                Select
                             </button>
                             <button 
                                 onClick={() => setIsSelecting(false)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${!isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
                             >
                                 <MousePointerClick className="rotate-90" size={14} />
-                                Interact Mode
+                                Interact
                             </button>
                         </div>
                     </div>
                 ) : (
-                    <span className="text-blue-400">Visual mode active. We will take screenshots and alert you on visual changes.</span>
+                    <span className="text-blue-400">Visual mode active. Screenshots will be compared.</span>
                 )}
             </div>
-             <div className="flex items-center space-x-2">
-                 <label className="text-gray-400 text-sm">Check Interval:</label>
-                 <select 
-                     value={interval} 
-                     onChange={(e) => setInterval(e.target.value)}
-                     className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                 >
-                     <option value="1m">1 minute</option>
-                     <option value="5m">5 minutes</option>
-                     <option value="30m">30 minutes</option>
-                     <option value="1h">1 hour</option>
-                     <option value="8h">8 hours</option>
-                     <option value="24h">24 hours</option>
-                     <option value="1w">1 week</option>
-                 </select>
+             <div className="flex items-center justify-between w-full md:w-auto gap-4">
+                 
+                 {/* Notification Rules */}
+                 <div className="flex items-center gap-2">
+                     <Bell size={16} className="text-gray-400" />
+                     <select 
+                         value={notifyConfig.method} 
+                         onChange={(e) => setNotifyConfig({ ...notifyConfig, method: e.target.value })}
+                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
+                         title="Notification Rule"
+                     >
+                         <option value="all">Always Notify</option>
+                         <option value="value_lt">Value &lt;</option>
+                         <option value="value_gt">Value &gt;</option>
+                         <option value="contains">Contains</option>
+                         <option value="not_contains">Not Contains</option>
+                     </select>
+                     {notifyConfig.method !== 'all' && (
+                         <input 
+                             type="text" 
+                             placeholder="Val" 
+                             value={notifyConfig.threshold}
+                             onChange={(e) => setNotifyConfig({ ...notifyConfig, threshold: e.target.value })}
+                             className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-20"
+                         />
+                     )}
+                 </div>
+
+                 {/* AI Prompt Input */}
+                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4">
+                     <Brain size={16} className="text-purple-400" />
+                     <input 
+                         type="text" 
+                         placeholder="AI Focus: e.g. Watch for price..." 
+                         value={aiPrompt}
+                         onChange={(e) => setAiPrompt(e.target.value)}
+                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500 w-48 placeholder-gray-600"
+                         title="Custom instructions for AI Analysis"
+                     />
+                 </div>
+
+
+
+                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4">
+                     <label className="text-gray-400 text-sm whitespace-nowrap">Check Every:</label>
+                     <select 
+                         value={interval} 
+                         onChange={(e) => setInterval(e.target.value)}
+                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                     >
+                         <option value="1m">1m</option>
+                         <option value="5m">5m</option>
+                         <option value="30m">30m</option>
+                         <option value="1h">1h</option>
+                         <option value="8h">8h</option>
+                         <option value="24h">24h</option>
+                         <option value="1w">1w</option>
+                     </select>
+                 </div>
                   <button 
                       onClick={handleSave}
                       disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement)}
-                      className={`px-6 py-1 rounded transition font-medium ml-4 w-32 justify-center flex ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-500'}`}
+                      className={`px-6 py-1 rounded transition font-medium w-32 justify-center flex ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-500'}`}
                   >
                       Save
                   </button>

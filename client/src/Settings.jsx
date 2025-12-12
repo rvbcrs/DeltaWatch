@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react'
-import { Save, Bell, Mail, Smartphone, Globe, ArrowLeft } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Save, Bell, Mail, Smartphone, Globe, ArrowLeft, Download, Upload, Eye, EyeOff, Brain, Shield, Search } from 'lucide-react';
 import { useToast } from './contexts/ToastContext';
 import { useNavigate } from 'react-router-dom'
 
 function Settings() {
+    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
+    const [showPassword, setShowPassword] = useState(false);
     const { showToast } = useToast();
     const [settings, setSettings] = useState({
         email_enabled: false,
@@ -18,11 +20,19 @@ function Settings() {
         push_enabled: false,
         push_type: 'pushover',
         push_key1: '',
-        push_key2: ''
+        push_key2: '',
+        ai_enabled: false,
+        ai_provider: 'openai',
+        ai_api_key: '',
+        ai_model: 'gpt-4o-mini',
+        ai_base_url: '',
+        proxy_enabled: false,
+        proxy_server: '',
+        proxy_auth: ''
     });
 
     useEffect(() => {
-        fetch('http://localhost:3000/settings')
+        fetch(`${API_BASE}/settings`)
             .then(res => res.json())
             .then(data => {
                 if (data.message === 'success' && data.data) {
@@ -31,6 +41,9 @@ function Settings() {
                         email_enabled: !!data.data.email_enabled,
                         email_secure: !!data.data.email_secure,
                         push_enabled: !!data.data.push_enabled,
+                        ai_enabled: !!data.data.ai_enabled,
+                        ai_provider: data.data.ai_provider || 'openai',
+                        proxy_enabled: !!data.data.proxy_enabled,
                     });
                 }
             })
@@ -47,7 +60,7 @@ function Settings() {
 
     const handleSave = async () => {
         try {
-            const res = await fetch('http://localhost:3000/settings', {
+            const res = await fetch(`${API_BASE}/settings`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -87,6 +100,36 @@ function Settings() {
         } catch (e) {
             console.error(e);
             showToast('Error: ' + e.message, 'error');
+        }
+    };
+
+    const [fetchedModels, setFetchedModels] = useState([]);
+    const [fetchingModels, setFetchingModels] = useState(false);
+
+    const handleFetchModels = async () => {
+        setFetchingModels(true);
+        try {
+            const res = await fetch(`${API_BASE}/api/models`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: settings.ai_provider,
+                    apiKey: settings.ai_api_key,
+                    baseUrl: settings.ai_base_url
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setFetchedModels(data.data);
+                showToast(`Found ${data.data.length} models`, 'success');
+            } else {
+                showToast('Error fetching models: ' + data.error, 'error');
+            }
+        } catch (e) {
+            console.error(e);
+            showToast('Network error fetching models', 'error');
+        } finally {
+            setFetchingModels(false);
         }
     };
 
@@ -140,7 +183,23 @@ function Settings() {
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400 mb-1">Password</label>
-                                    <input type="password" name="email_pass" value={settings.email_pass} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-blue-500 focus:outline-none" placeholder="App Password" />
+                                    <div className="relative">
+                                        <input 
+                                            type={showPassword ? 'text' : 'password'} 
+                                            name="email_pass" 
+                                            value={settings.email_pass} 
+                                            onChange={handleChange} 
+                                            className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-blue-500 focus:outline-none pr-10" 
+                                            placeholder="App Password" 
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPassword(!showPassword)}
+                                            className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-white"
+                                        >
+                                            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="md:col-span-2">
                                     <label className="block text-sm font-medium text-gray-400 mb-1">Send to Email</label>
@@ -202,7 +261,144 @@ function Settings() {
                             </div>
                         )}
                     </div>
+                    {/* AI Settings */}
+                    <div className="bg-[#161b22] p-6 rounded-lg border border-gray-800 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-lg font-semibold text-white flex items-center gap-2"><Brain size={20} className="text-purple-400" /> AI Analysis</h2>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="ai_enabled" checked={settings.ai_enabled} onChange={handleChange} className="sr-only peer" />
+                                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-purple-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                            </label>
+                        </div>
+                        {settings.ai_enabled && (
+                            <div className="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-1">Provider</label>
+                                    <select name="ai_provider" value={settings.ai_provider} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-purple-500 focus:outline-none">
+                                        <option value="openai">OpenAI (ChatGPT)</option>
+                                        <option value="ollama">Ollama (Local)</option>
+                                    </select>
+                                </div>
+                                {settings.ai_provider === 'openai' && (
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-400 mb-1">API Key</label>
+                                        <input type="text" name="ai_api_key" value={settings.ai_api_key} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-purple-500 focus:outline-none" placeholder="sk-..." />
+                                        <p className="text-xs text-gray-500 mt-1">Found in your <a href="https://platform.openai.com/api-keys" target="_blank" className="text-purple-400 hover:underline">OpenAI Dashboard</a>.</p>
+                                    </div>
+                                )}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-1">Model</label>
+                                    <div className="flex gap-2">
+                                        <div className="flex-1 relative">
+                                            <input 
+                                                type="text" 
+                                                name="ai_model" 
+                                                value={settings.ai_model} 
+                                                onChange={handleChange} 
+                                                list="model-options"
+                                                className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-purple-500 focus:outline-none" 
+                                                placeholder={settings.ai_provider === 'openai' ? 'gpt-4o-mini' : 'llama3'} 
+                                            />
+                                            <datalist id="model-options">
+                                                {fetchedModels.map(m => <option key={m} value={m} />)}
+                                            </datalist>
+                                        </div>
+                                        <button 
+                                            onClick={handleFetchModels}
+                                            disabled={fetchingModels}
+                                            className="bg-purple-900/30 text-purple-400 px-3 rounded border border-purple-900 hover:bg-purple-900/50 transition-colors disabled:opacity-50"
+                                            title="Fetch available models"
+                                        >
+                                            <Search size={18} className={fetchingModels ? 'animate-spin' : ''} />
+                                        </button>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        {settings.ai_provider === 'openai' 
+                                            ? "Examples: gpt-4o-mini, gpt-4o, gpt-3.5-turbo" 
+                                            : "Example: llama3, mistral, llama2:13b"}
+                                    </p>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-1">Base URL (Optional)</label>
+                                    <input type="text" name="ai_base_url" value={settings.ai_base_url} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-purple-500 focus:outline-none" placeholder={settings.ai_provider === 'ollama' ? 'http://localhost:11434/v1' : 'https://api.openai.com/v1'} />
+                                </div>
+                            </div>
+                        )}
+                    </div>
 
+                    {/* Proxy Settings */}
+                    <div className="bg-[#161b22] p-6 rounded-lg border border-gray-800 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h2 className="text-lg font-semibold text-white flex items-center gap-2"><Shield size={20} className="text-orange-400" /> Proxy & Stealth</h2>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="proxy_enabled" checked={settings.proxy_enabled} onChange={handleChange} className="sr-only peer" />
+                                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-orange-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                            </label>
+                        </div>
+                        {settings.proxy_enabled && (
+                            <div className="grid grid-cols-1 gap-4">
+                                <div className="p-3 bg-orange-900/20 border border-orange-900/50 rounded text-orange-200 text-sm">
+                                    <p>Stealth mode is automatically enabled when using a proxy to reduce detection.</p>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-1">Proxy Server</label>
+                                    <input type="text" name="proxy_server" value={settings.proxy_server} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-orange-500 focus:outline-none" placeholder="http://proxy.example.com:8080" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-1">Auth (user:pass) (Optional)</label>
+                                    <input type="text" name="proxy_auth" value={settings.proxy_auth} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-orange-500 focus:outline-none" placeholder="username:password" />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Data Management */}
+                    <div className="bg-[#161b22] p-6 rounded-lg border border-gray-800 shadow-lg">
+                        <h2 className="text-lg font-semibold text-white mb-4">Data Management</h2>
+                        <div className="flex gap-4">
+                            <button 
+                                onClick={() => window.open(`${API_BASE}/data/export`, '_blank')}
+                                className="flex-1 bg-[#21262d] text-gray-300 py-3 rounded-lg hover:bg-[#30363d] border border-gray-700 font-bold transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Download size={20} /> Export Monitors
+                            </button>
+                            <label className="flex-1 bg-[#21262d] text-gray-300 py-3 rounded-lg hover:bg-[#30363d] border border-gray-700 font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer">
+                                <Upload size={20} /> Import Monitors
+                                <input 
+                                    type="file" 
+                                    accept=".json" 
+                                    onChange={async (e) => {
+                                        const file = e.target.files[0];
+                                        if (!file) return;
+
+                                        const reader = new FileReader();
+                                        reader.onload = async (event) => {
+                                            try {
+                                                const json = JSON.parse(event.target.result);
+                                                const res = await fetch(`${API_BASE}/data/import`, {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify(json)
+                                                });
+                                                const data = await res.json();
+                                                if (data.message === 'success') {
+                                                    showToast(`Imported ${data.imported} monitors. Skipped/Failed: ${data.errors}`, 'success');
+                                                } else {
+                                                    showToast(data.error || 'Import failed', 'error');
+                                                }
+                                            } catch (err) {
+                                                console.error(err);
+                                                showToast('Invalid JSON file or upload error', 'error');
+                                            }
+                                        };
+                                        reader.readAsText(file);
+                                        e.target.value = '';
+                                    }} 
+                                    className="hidden" 
+                                />
+                            </label>
+                        </div>
+                    </div>
                     <div className="flex gap-4 pt-4">
                         <button 
                             onClick={handleSave}

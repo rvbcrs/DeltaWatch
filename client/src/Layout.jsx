@@ -1,27 +1,50 @@
+import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, AlertCircle, Radio, Settings, Users, Share2, Plus, Radar } from 'lucide-react'
+import { LayoutDashboard, AlertCircle, Radio, Settings, Users, Share2, Plus, Radar, Menu, X } from 'lucide-react'
 
 function Layout({ children }) {
   const location = useLocation();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Close menu when route changes
+  useEffect(() => {
+      setIsSidebarOpen(false);
+  }, [location]);
 
   const navItems = [
     { icon: <LayoutDashboard size={20} />, label: 'Monitoring', path: '/' },
-    // { icon: <AlertCircle size={20} />, label: 'Incidents', path: '#' },
-    // { icon: <Radio size={20} />, label: 'Status pages', path: '#' },
-    // { icon: <Settings size={20} />, label: 'Maintenance', path: '#' },
-    // { icon: <Users size={20} />, label: 'Team members', path: '#' },
-    { icon: <Settings size={20} />, label: 'Settings', path: '/settings' }, // Changed to Settings for notification config
+    { icon: <Settings size={20} />, label: 'Settings', path: '/settings' },
   ];
 
   return (
-    <div className="flex h-screen bg-[#10141b] text-white font-sans">
-      {/* Sidebar */}
-      <div className="w-64 flex flex-col border-r border-gray-800 bg-[#161b22]">
-        <div className="p-6">
+    <div className="flex h-screen bg-[#10141b] text-white font-sans overflow-hidden">
+      
+      {/* Sidebar Overlay */}
+      {isSidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-black/50 z-40 animate-in fade-in" 
+            onClick={() => setIsSidebarOpen(false)}
+          />
+      )}
+
+      {/* Sidebar - Fixed Sliding Drawer */}
+      <div className={`
+        fixed inset-y-0 left-0 z-50 
+        w-64 bg-[#161b22] border-r border-gray-800 flex flex-col 
+        transform transition-transform duration-300 ease-in-out
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} 
+      `}>
+        <div className="p-6 flex items-center justify-between">
             <h1 className="text-xl font-bold flex items-center gap-2 text-white">
                 <Radar className="text-green-500" />
                 DeltaWatch
             </h1>
+            <button 
+                onClick={() => setIsSidebarOpen(false)} 
+                className="text-gray-400 hover:text-white"
+            >
+                <X size={24} />
+            </button>
         </div>
 
         <nav className="flex-1 px-4 space-y-1">
@@ -43,13 +66,20 @@ function Layout({ children }) {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top Header - Optional, maybe just for mobile toggle or profile? */}
-        {/* <header className="h-16 border-b border-gray-800 flex items-center justify-end px-6">
-            <div className="w-8 h-8 bg-gray-700 rounded-full"></div>
-        </header> */}
+      <div className="flex-1 flex flex-col w-full min-w-0 bg-[#0d1117]">
         
-        <main className="flex-1 overflow-y-auto p-8">
+        {/* Dedicated Header for Toggle */}
+        <header className="h-14 border-b border-gray-800 flex items-center px-4 bg-[#161b22] sticky top-0 z-40 shrink-0">
+             <button 
+                onClick={() => setIsSidebarOpen(true)}
+                className={`p-2 hover:bg-gray-800 rounded-md text-gray-400 hover:text-white transition-opacity ${isSidebarOpen ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+                title="Open Menu"
+            >
+                <Menu size={24} />
+            </button>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-4 md:p-8">
             {children}
         </main>
       </div>

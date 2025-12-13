@@ -140,7 +140,7 @@ async function getModels(provider, apiKey, baseUrl) {
 
 const fs = require('fs');
 
-async function summarizeVisualChange(oldImagePath, newImagePath) {
+async function summarizeVisualChange(oldImagePath, newImagePath, customPrompt = null) {
     console.log("AI: summarizeVisualChange called");
     try {
         const settings = await getSettings();
@@ -170,12 +170,27 @@ async function summarizeVisualChange(oldImagePath, newImagePath) {
         const oldImage = fs.readFileSync(oldImagePath, { encoding: 'base64' });
         const newImage = fs.readFileSync(newImagePath, { encoding: 'base64' });
 
-        const prompt = `
-You remain a helpful assistant for a website change monitor.
-These are two screenshots of a website. The first is the OLD state, the second is the NEW state.
-Describe the VISUAL changes between them. Focus on what is different (layout, content, colors, errors).
-Be concise.
+        // Build a more intelligent prompt
+        let prompt = `You are an expert visual change detector for a website monitoring system.
+
+I'm showing you two screenshots of the SAME webpage taken at different times:
+- IMAGE 1: The OLD/previous state
+- IMAGE 2: The NEW/current state
+
+Your task:
+1. Compare both screenshots carefully
+2. Identify ALL meaningful visual differences
+3. Ignore irrelevant changes like: timestamps, ads, random images, minor styling flickers
+4. Focus on important changes like: prices, stock status, content text, buttons, error messages, layout shifts
+
 `;
+
+        if (customPrompt) {
+            prompt += `\nADDITIONAL CONTEXT from the user:\n"${customPrompt}"\n\n`;
+        }
+
+        prompt += `Respond with a concise summary of what changed. If nothing significant changed, say "No significant visual changes detected."
+Format: Start directly with what changed, e.g. "The price changed from €299 to €249" or "A new banner appeared at the top".`;
 
         const response = await openai.chat.completions.create({
             model: model,
@@ -189,7 +204,7 @@ Be concise.
                     ],
                 },
             ],
-            max_tokens: 300,
+            max_tokens: 400,
         });
 
         const summary = response.choices[0].message.content.trim();

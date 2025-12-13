@@ -5,3 +5,4 @@ server/data/monitors.db
 server/public/screenshots
 server/*.png
 *.tar
+server/chrome_user_data

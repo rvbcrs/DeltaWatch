@@ -22,6 +22,7 @@ function Editor() {
   const [name, setName] = useState('')
   const [notifyConfig, setNotifyConfig] = useState({ method: 'all', threshold: '' });
   const [aiPrompt, setAiPrompt] = useState('');
+  const [aiOnlyVisual, setAiOnlyVisual] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -48,6 +49,7 @@ function Editor() {
                         }
                     } catch (e) { console.error(e); }
                     setAiPrompt(monitor.ai_prompt || '');
+                    setAiOnlyVisual(!!monitor.ai_only_visual);
                 }
             })
             .catch(err => alert('Failed to load monitor'));
@@ -64,6 +66,22 @@ function Editor() {
       } else if (type === 'deselected') {
           if (selectedElement && selectedElement.selector === payload) {
               setSelectedElement(null)
+          }
+      } else if (type === 'navigate') {
+          console.log("Navigating to:", payload);
+          setProxyUrl(`${API_BASE}/proxy?url=${encodeURIComponent(payload)}`);
+          showToast('Navigating...', 'info');
+      } else if (type === 'TEST_SELECTOR_RESULT') {
+          // Handle test selector result
+          if (payload.found) {
+              showToast(`✅ Found ${payload.count} element${payload.count > 1 ? 's' : ''}`, 'success');
+              if (selectedElement) {
+                  setSelectedElement(prev => ({ ...prev, text: payload.text }));
+              }
+          } else if (payload.error) {
+              showToast(`❌ Invalid selector: ${payload.error}`, 'error');
+          } else {
+              showToast(`❌ No elements found`, 'error');
           }
       }
     };
@@ -120,7 +138,8 @@ function Editor() {
                 interval,
                 type: monitorType,
                 notify_config: notifyConfig,
-                ai_prompt: aiPrompt
+                ai_prompt: aiPrompt,
+                ai_only_visual: aiOnlyVisual ? 1 : 0
             })
         });
         const data = await response.json();
@@ -231,7 +250,7 @@ function Editor() {
         </div>
         
         {/* Helper Text */}
-        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-400 gap-4">
+        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-400 gap-4 opacity-50 hover:opacity-100 transition-opacity duration-300">
             <div className="w-full md:w-auto">
                 {monitorType === 'text' ? (
                     <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full">
@@ -240,7 +259,7 @@ function Editor() {
                             {isSelecting ? "Click any element." : "Interact with page."}
                         </p>
                         
-                        <div className="flex bg-[#21262d] rounded-lg p-1 overflow-x-auto max-w-full">
+                     <div className="flex bg-[#21262d] rounded-lg p-1 overflow-x-auto max-w-full">
                             {/* Clear Button */}
                             <button 
                                 onClick={() => {
@@ -284,16 +303,17 @@ function Editor() {
                      <select 
                          value={notifyConfig.method} 
                          onChange={(e) => setNotifyConfig({ ...notifyConfig, method: e.target.value })}
-                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
+                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[160px]"
                          title="Notification Rule"
                      >
                          <option value="all">Always Notify</option>
+                         <option value="ai_focus">🤖 AI Focus Match</option>
                          <option value="value_lt">Value &lt;</option>
                          <option value="value_gt">Value &gt;</option>
                          <option value="contains">Contains</option>
                          <option value="not_contains">Not Contains</option>
                      </select>
-                     {notifyConfig.method !== 'all' && (
+                     {notifyConfig.method !== 'all' && notifyConfig.method !== 'ai_focus' && (
                          <input 
                              type="text" 
                              placeholder="Val" 
@@ -350,12 +370,47 @@ function Editor() {
         {selectedElement && monitorType === 'text' && (
             <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
                 <h2 className="text-lg font-semibold mb-2 text-white">Selected Element</h2>
-                <div className="bg-[#0d1117] p-2 rounded mb-4 text-xs font-mono break-all border border-gray-700 text-gray-300">
-                    {selectedElement.selector}
+                <div className="flex gap-2 mb-2">
+                    <input 
+                        type="text"
+                        value={selectedElement.selector}
+                        onChange={(e) => setSelectedElement({ ...selectedElement, selector: e.target.value })}
+                        className="flex-1 bg-[#0d1117] p-2 rounded text-xs font-mono break-all border border-gray-700 text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        placeholder="CSS Selector"
+                    />
+                    <button
+                        onClick={() => {
+                            const iframe = document.querySelector('iframe');
+                            if (iframe) {
+                                iframe.contentWindow.postMessage({
+                                    type: 'TEST_SELECTOR',
+                                    payload: selectedElement.selector
+                                }, '*');
+                            }
+                        }}
+                        className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-500 transition whitespace-nowrap"
+                        title="Test selector and highlight matching element"
+                    >
+                        🔍 Test
+                    </button>
                 </div>
                 <div className="mb-4">
                     <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Current Text</h3>
-                    <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200">{selectedElement.text}</p>
+                    <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200">{selectedElement.text || <span className="text-gray-500 italic">No text content</span>}</p>
+                </div>
+                
+                {/* AI-Only Detection Toggle */}
+                <div className="mb-4 p-3 bg-[#0d1117] rounded border border-gray-700">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input 
+                            type="checkbox" 
+                            checked={aiOnlyVisual}
+                            onChange={(e) => setAiOnlyVisual(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
+                        />
+                        <span className="text-sm text-gray-300">🤖 AI-Only Detection</span>
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1">Only notify when AI determines the change is meaningful</p>
                 </div>
                 {/* Removed duplicate Interval and Save controls */}
             </div>

@@ -33,6 +33,7 @@ function Dashboard() {
   const [monitors, setMonitors] = useState([])
   const [loading, setLoading] = useState(true)
   const [checkingMonitors, setCheckingMonitors] = useState(new Set())
+  const [selectedTag, setSelectedTag] = useState(null) // null = show all
   const navigate = useNavigate()
   const { showToast } = useToast()
   const { confirm } = useDialog()
@@ -181,30 +182,72 @@ function Dashboard() {
       }
   }
 
+  // Compute all unique tags from monitors
+  const allTags = [...new Set(monitors.flatMap(m => {
+    try { return JSON.parse(m.tags || '[]'); } catch { return []; }
+  }))].sort();
+
+  // Filter monitors by selected tag
+  const filteredMonitors = selectedTag 
+    ? monitors.filter(m => {
+        try { 
+          const tags = JSON.parse(m.tags || '[]');
+          return tags.includes(selectedTag);
+        } catch { return false; }
+      })
+    : monitors;
+
   return (
     <div className="h-full flex flex-col">
-       <div className="flex justify-between items-center mb-6">
+       <div className="flex justify-between items-center mb-4">
             <h1 className="text-2xl font-bold text-white">Deltas</h1>
             <Link to="/new" className="bg-[#1f6feb] hover:bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 text-sm font-medium transition-colors">
                 <Plus size={16} /> New
             </Link>
         </div>
 
-
+        {/* Tag Filter Pills */}
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-4">
+            <button
+              onClick={() => setSelectedTag(null)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                selectedTag === null 
+                  ? 'bg-blue-500 text-white' 
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+              }`}
+            >
+              All ({monitors.length})
+            </button>
+            {allTags.map(tag => (
+              <button
+                key={tag}
+                onClick={() => setSelectedTag(tag === selectedTag ? null : tag)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  selectedTag === tag 
+                    ? 'bg-purple-500 text-white' 
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                }`}
+              >
+                {tag} ({monitors.filter(m => { try { return JSON.parse(m.tags || '[]').includes(tag); } catch { return false; }}).length})
+              </button>
+            ))}
+          </div>
+        )}
 
         {loading ? (
              <div className="text-center py-10 text-gray-500">Loading monitors...</div>
         ) : (
             <div className="space-y-2">
-                {monitors.length === 0 && (
+                {filteredMonitors.length === 0 && (
                     <div className="text-center py-20 bg-[#161b22] rounded-lg border border-dashed border-gray-700">
-                        <h3 className="text-lg font-medium text-gray-300">No monitors yet</h3>
-                        <p className="text-gray-500 mb-4">Get started by creating your first monitor.</p>
-                        <Link to="/new" className="text-blue-400 hover:text-blue-300 hover:underline">Create Monitor</Link>
+                        <h3 className="text-lg font-medium text-gray-300">{selectedTag ? 'No monitors with this tag' : 'No monitors yet'}</h3>
+                        <p className="text-gray-500 mb-4">{selectedTag ? 'Try selecting a different tag or create a new monitor.' : 'Get started by creating your first monitor.'}</p>
+                        {!selectedTag && <Link to="/new" className="text-blue-400 hover:text-blue-300 hover:underline">Create Monitor</Link>}
                     </div>
                 )}
 
-                {monitors.map(monitor => (
+                {filteredMonitors.map(monitor => (
                     <Link 
                         to={`/monitor/${monitor.id}`}
                         key={monitor.id} 
@@ -250,8 +293,28 @@ function Dashboard() {
                                     <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border bg-red-500/20 text-red-300 border-red-500/30">
                                         {monitor.interval}
                                     </span>
-                                    <h3 className="text-white font-bold text-lg truncate max-w-[200px] md:max-w-xs" title={monitor.name || monitor.url}>
+                                    {/* Uptime Badge */}
+                                    {monitor.history && monitor.history.length > 0 && (() => {
+                                        const historyWithStatus = monitor.history.filter(h => h.http_status !== null);
+                                        if (historyWithStatus.length === 0) return null;
+                                        const upCount = historyWithStatus.filter(h => h.http_status < 400).length;
+                                        const uptime = Math.round((upCount / historyWithStatus.length) * 100);
+                                        const colorClass = uptime >= 99 ? 'bg-green-900/30 text-green-400 border-green-900' :
+                                                          uptime >= 95 ? 'bg-yellow-900/30 text-yellow-400 border-yellow-900' :
+                                                          'bg-red-900/30 text-red-400 border-red-900';
+                                        return (
+                                            <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border ${colorClass}`}>
+                                                {uptime}% UP
+                                            </span>
+                                        );
+                                    })()}
+                                    <h3 className="text-white font-bold text-lg truncate max-w-[200px] md:max-w-xs flex items-center gap-2" title={monitor.name || monitor.url}>
                                         {monitor.name || (monitor.url ? new URL(monitor.url).hostname : 'Untitled')}
+                                        {monitor.unread_count > 0 && (
+                                            <span className="w-5 h-5 text-[10px] font-bold rounded-full bg-blue-500 text-white flex items-center justify-center flex-shrink-0">
+                                                {monitor.unread_count > 9 ? '9+' : monitor.unread_count}
+                                            </span>
+                                        )}
                                     </h3>
                                 </div>
                                 
@@ -287,8 +350,13 @@ function Dashboard() {
                                             return (
                                                 <div 
                                                     key={i} 
-                                                    className={`w-1 h-4 rounded-sm ${colorClass}`}
+                                                    className={`w-1 h-4 rounded-sm ${colorClass} ${record ? 'cursor-pointer hover:opacity-75 transition-opacity' : ''}`}
                                                     title={record ? `${new Date(formatDate(record.created_at)).toLocaleString()} - ${record.status}` : 'No Data'}
+                                                    onClick={record ? (e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        navigate(`/monitor/${monitor.id}#history-${record.id}`);
+                                                    } : undefined}
                                                 />
                                             );
                                         })}

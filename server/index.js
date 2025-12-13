@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth');
+chromium.use(stealth());
 const path = require('path');
 const fs = require('fs');
 
@@ -15,6 +17,22 @@ app.use('/static', express.static(path.join(__dirname, 'public')));
 
 const db = require('./db');
 const { summarizeChange, getModels } = require('./ai');
+
+let globalBrowser = null;
+const sessionContexts = new Map(); // sessionId -> { context, lastAccess }
+
+// Cleanup interval (every minute)
+setInterval(async () => {
+    const now = Date.now();
+    for (const [id, session] of sessionContexts.entries()) {
+        if (now - session.lastAccess > 10 * 60 * 1000) { // 10 min timeout
+            console.log(`[Proxy] Cleaning up stale session ${id}`);
+            try { await session.context.close(); } catch (e) { }
+            sessionContexts.delete(id);
+        }
+    }
+}, 60000);
+
 // Serve static files (like the selector script)
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
@@ -29,7 +47,7 @@ app.get('/monitors', (req, res) => {
         const monitorsWithHistory = await Promise.all(monitors.map(async (monitor) => {
             return new Promise((resolve, reject) => {
                 db.all(
-                    "SELECT id, status, created_at, value, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC LIMIT 20",
+                    "SELECT id, status, created_at, value, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary, http_status FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC LIMIT 20",
                     [monitor.id],
                     (err, history) => {
                         if (err) resolve({ ...monitor, history: [] }); // Fail gracefully
@@ -58,18 +76,32 @@ app.post('/monitors', (req, res) => {
         return res.status(400).json({ error: 'Missing selector for text monitor' });
     }
 
-    const sql = 'INSERT INTO monitors (url, selector, selector_text, interval, type, name, notify_config) VALUES (?,?,?,?,?,?,?)';
-    const params = [url, finalSelector, selector_text, interval, type || 'text', name || '', notify_config ? JSON.stringify(notify_config) : null];
+    const sql = 'INSERT INTO monitors (url, selector, selector_text, interval, type, name, notify_config, ai_prompt, ai_only_visual) VALUES (?,?,?,?,?,?,?,?,?)';
+    const params = [url, finalSelector, selector_text, interval, type || 'text', name || '', notify_config ? JSON.stringify(notify_config) : null, req.body.ai_prompt || null, req.body.ai_only_visual || 0];
 
     db.run(sql, params, function (err, result) {
         if (err) {
             res.status(400).json({ "error": err.message })
             return;
         }
+        const newMonitorId = this.lastID;
+
+        // Trigger initial check asynchronously
+        db.get('SELECT * FROM monitors WHERE id = ?', [newMonitorId], async (err, monitor) => {
+            if (!err && monitor) {
+                console.log(`[Auto-Check] Triggering initial check for new monitor ${newMonitorId}`);
+                try {
+                    await checkSingleMonitor(monitor);
+                } catch (e) {
+                    console.error(`[Auto-Check] Initial check failed:`, e.message);
+                }
+            }
+        });
+
         res.json({
             "message": "success",
-            "data": { id: this.lastID, ...req.body },
-            "id": this.lastID
+            "data": { id: newMonitorId, ...req.body },
+            "id": newMonitorId
         })
     });
 });
@@ -117,6 +149,38 @@ app.delete('/monitors/:id', (req, res) => {
         });
 });
 
+// Update monitor tags
+app.patch('/monitors/:id/tags', (req, res) => {
+    const { tags } = req.body; // Array of tag strings
+    const tagsJson = JSON.stringify(tags || []);
+    db.run(
+        'UPDATE monitors SET tags = ? WHERE id = ?',
+        [tagsJson, req.params.id],
+        function (err) {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            res.json({ success: true, tags: tags || [] });
+        }
+    );
+});
+
+// Update monitor keywords
+app.patch('/monitors/:id/keywords', (req, res) => {
+    const { keywords } = req.body; // Array of {text: string, mode: 'appears'|'disappears'|'any'}
+    const keywordsJson = JSON.stringify(keywords || []);
+    db.run(
+        'UPDATE monitors SET keywords = ? WHERE id = ?',
+        [keywordsJson, req.params.id],
+        function (err) {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            res.json({ success: true, keywords: keywords || [] });
+        }
+    );
+});
+
 app.post('/monitors/:id/check', (req, res) => {
     const { id } = req.params;
     console.log(`[API] Received Manual Check Request for Monitor ${id}`);
@@ -134,8 +198,109 @@ app.post('/monitors/:id/check', (req, res) => {
     });
 });
 
+// Mark monitor as read (reset unread count)
+app.post('/monitors/:id/read', (req, res) => {
+    const id = req.params.id;
+    db.run("UPDATE monitors SET unread_count = 0 WHERE id = ?", [id], function (err) {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ success: true, message: "Monitor marked as read" });
+    });
+});
+
+// Export monitor history as JSON
+app.get('/monitors/:id/export/json', (req, res) => {
+    const id = req.params.id;
+    db.get("SELECT * FROM monitors WHERE id = ?", [id], (err, monitor) => {
+        if (err || !monitor) {
+            return res.status(404).json({ error: 'Monitor not found' });
+        }
+        db.all(
+            "SELECT id, status, created_at, value, ai_summary FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC",
+            [id],
+            (err, history) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Content-Disposition', `attachment; filename="monitor-${id}-export.json"`);
+                res.json({
+                    monitor: {
+                        id: monitor.id,
+                        name: monitor.name,
+                        url: monitor.url,
+                        type: monitor.type,
+                        selector: monitor.selector,
+                        interval: monitor.interval
+                    },
+                    history: history
+                });
+            }
+        );
+    });
+});
+
+// Export monitor history as CSV
+app.get('/monitors/:id/export/csv', (req, res) => {
+    const id = req.params.id;
+    db.get("SELECT * FROM monitors WHERE id = ?", [id], (err, monitor) => {
+        if (err || !monitor) {
+            return res.status(404).json({ error: 'Monitor not found' });
+        }
+        db.all(
+            "SELECT id, status, created_at, value, ai_summary FROM check_history WHERE monitor_id = ? ORDER BY created_at DESC",
+            [id],
+            (err, history) => {
+                if (err) return res.status(500).json({ error: err.message });
+
+                // Build CSV
+                const escapeCSV = (str) => {
+                    if (!str) return '';
+                    str = String(str);
+                    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                        return '"' + str.replace(/"/g, '""') + '"';
+                    }
+                    return str;
+                };
+
+                let csv = 'Date,Status,Value,AI Summary\n';
+                history.forEach(h => {
+                    csv += `${escapeCSV(h.created_at)},${escapeCSV(h.status)},${escapeCSV(h.value)},${escapeCSV(h.ai_summary)}\n`;
+                });
+
+                res.setHeader('Content-Type', 'text/csv');
+                res.setHeader('Content-Disposition', `attachment; filename="monitor-${id}-export.csv"`);
+                res.send(csv);
+            }
+        );
+    });
+});
+
+// Endpoint for previewing scenario
+app.post('/preview-scenario', async (req, res) => {
+    const { url, scenario, proxy_enabled } = req.body;
+
+    try {
+        // Fetch settings for proxy
+        const settings = await new Promise((resolve) => db.get("SELECT * FROM settings WHERE id = 1", (err, row) => resolve(row || {})));
+
+        let proxySettings = null;
+        if (settings.proxy_enabled && settings.proxy_server) {
+            proxySettings = {
+                server: settings.proxy_server,
+                auth: settings.proxy_auth
+            };
+        }
+
+        const screenshot = await previewScenario(url, scenario, proxySettings);
+        res.json({ message: 'success', screenshot: screenshot });
+    } catch (e) {
+        console.error("Preview scenario error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.put('/monitors/:id', (req, res) => {
-    const { url, selector, selector_text, interval, last_value, type, name, notify_config } = req.body;
+    const { url, selector, selector_text, interval, last_value, type, name, notify_config, ai_prompt, ai_only_visual } = req.body;
     db.run(
         `UPDATE monitors set 
            url = COALESCE(?, url), 
@@ -145,9 +310,11 @@ app.put('/monitors/:id', (req, res) => {
            last_value = COALESCE(?, last_value),
            type = COALESCE(?, type),
            name = COALESCE(?, name),
-           notify_config = COALESCE(?, notify_config)
+           notify_config = COALESCE(?, notify_config),
+           ai_prompt = COALESCE(?, ai_prompt),
+           ai_only_visual = COALESCE(?, ai_only_visual)
            WHERE id = ?`,
-        [url, selector, selector_text, interval, last_value, type, name, notify_config ? JSON.stringify(notify_config) : null, req.params.id],
+        [url, selector, selector_text, interval, last_value, type, name, notify_config ? JSON.stringify(notify_config) : null, ai_prompt, ai_only_visual, req.params.id],
         function (err, result) {
             if (err) {
                 res.status(400).json({ "error": res.message })
@@ -180,16 +347,86 @@ app.patch('/monitors/:id/status', (req, res) => {
 
 
 app.get('/proxy', async (req, res) => {
-    const { url } = req.query;
+    const { url, session_id } = req.query;
 
     if (!url) {
         return res.status(400).send('Missing URL parameter');
     }
 
     try {
-        const browser = await chromium.launch({ headless: true });
-        const context = await browser.newContext();
+        // Helper to launch persistent context
+        const launchBrowser = async () => {
+            console.log("[Server] Launching Persistent Browser Profile...");
+            const userDataDir = path.join(__dirname, 'chrome_user_data');
+            if (!fs.existsSync(userDataDir)) {
+                try { fs.mkdirSync(userDataDir); } catch (e) { }
+            }
+
+            const ctx = await chromium.launchPersistentContext(userDataDir, {
+                headless: true, // Invisible
+                ignoreDefaultArgs: ['--enable-automation'],
+                args: [
+                    '--disable-gpu',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                    '--mute-audio'
+                ],
+                viewport: { width: 1280, height: 800 },
+                locale: 'nl-NL',
+                timezoneId: 'Europe/Amsterdam',
+                permissions: ['geolocation', 'notifications'],
+                ignoreHTTPSErrors: true
+            });
+
+            await ctx.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            });
+
+            return ctx;
+        };
+
+        // Check if browser is still alive, relaunch if needed
+        if (!globalBrowser) {
+            globalBrowser = await launchBrowser();
+        } else {
+            // Test if context is still connected by trying to get pages
+            try {
+                globalBrowser.pages(); // Throws if closed
+            } catch (e) {
+                console.log("[Server] Browser context was closed, relaunching...");
+                globalBrowser = await launchBrowser();
+            }
+        }
+
+        // Use the global persistent context
+        const context = globalBrowser;
+
+        // Session tracking (logical only now)
+        if (session_id) {
+            if (!sessionContexts.has(session_id)) {
+                console.log(`[Proxy] New logical session ${session_id} on persistent profile`);
+                sessionContexts.set(session_id, { context, lastAccess: Date.now() });
+            } else {
+                console.log(`[Proxy] Continuing session ${session_id}`);
+                sessionContexts.get(session_id).lastAccess = Date.now();
+            }
+        }
+
         const page = await context.newPage();
+
+        // Debug Logging
+        page.on('console', msg => {
+            if (msg.type() === 'error' || msg.type() === 'warning') {
+                console.log(`[Browser ${msg.type().toUpperCase()}] ${msg.text()}`);
+            }
+        });
+        page.on('requestfailed', request => {
+            // Filter out junk
+            if (request.url().includes('google') || request.url().includes('doubleclick')) return;
+            console.log(`[Browser Network Error] ${request.url()} : ${request.failure()?.errorText}`);
+        });
 
         // Navigate to the target URL
         // Using 'networkidle' is better for SPAs with loaders, but might timeout on chatty sites.
@@ -206,9 +443,52 @@ app.get('/proxy', async (req, res) => {
                 // This targets the specific loader structure we saw: <div class="fixed inset-0 ...">
                 // If it doesn't exist or doesn't detach, we proceed (timeout).
                 await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 10000 });
-                console.log("Loader detached or not present.");
             } catch (waitErr) {
                 console.log("Loader wait timeout or not found, proceeding...");
+            }
+
+            // Aggressive Cleanup: Remove any high z-index overlays that might block the view
+            try {
+                await page.evaluate(() => {
+                    const clean = () => {
+                        console.log("Running aggressive overlay cleanup...");
+                        const elements = document.querySelectorAll('body > div, body > section, body > aside');
+                        elements.forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if ((style.position === 'fixed' || style.position === 'absolute') && parseInt(style.zIndex, 10) > 50) {
+                                // Check if it covers the center
+                                const rect = el.getBoundingClientRect();
+                                const centerX = window.innerWidth / 2;
+                                const centerY = window.innerHeight / 2;
+                                if (rect.left <= centerX && rect.right >= centerX && rect.top <= centerY && rect.bottom >= centerY) {
+                                    // Make sure it's not the breadcrumbs or our selector UI (which shouldn't be loaded yet/or has specific class)
+                                    if (!el.classList.contains('wachet-breadcrumbs')) {
+                                        console.log('Removing blocking overlay:', el);
+                                        el.remove();
+                                    }
+                                }
+                            }
+                        });
+                        // Also target specific common spinner classes
+                        const spinners = document.querySelectorAll('[class*="spinner"], [class*="loader"], [class*="loading"], [id*="onetrust"], [class*="overlay"]');
+                        spinners.forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.position === 'fixed' || parseInt(style.zIndex, 10) > 50) {
+                                el.remove();
+                            }
+                        });
+
+                        // Force unlock scrolling in case the site locked it for the modal
+                        document.documentElement.style.setProperty('overflow', 'auto', 'important');
+                        document.body.style.setProperty('overflow', 'auto', 'important');
+                        document.documentElement.style.setProperty('position', 'static', 'important');
+                        document.body.style.setProperty('position', 'static', 'important');
+                    };
+                    clean();
+                    setTimeout(clean, 500); // Check again lightly
+                });
+            } catch (e) {
+                console.log("Cleanup warning:", e.message);
             }
 
             // Just a small safety buffer for animations to finish
@@ -248,7 +528,7 @@ app.get('/proxy', async (req, res) => {
 
                 // Force full height to prevent cutoff inside the iframe
                 const style = document.createElement('style');
-                style.innerHTML = 'html, body { min-height: 100%; height: auto; width: 100%; margin: 0; padding: 0; }';
+                style.innerHTML = 'html, body { min-height: 100%; width: 100%; margin: 0; padding: 0; overflow: auto !important; position: static !important; }';
                 document.head.appendChild(style);
 
                 // NOTE: We used to strip scripts here to ensure a static snapshot.
@@ -287,8 +567,8 @@ app.get('/proxy', async (req, res) => {
 
         let content = await page.content();
 
-        // Cleanup
-        await browser.close();
+        // Cleanup handled by session manager
+
 
         // Security headers might prevent iframe usage?
         // We might need to strip X-Frame-Options if we were proxying the raw request, 
@@ -304,12 +584,135 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-const { startScheduler, checkSingleMonitor } = require('./scheduler');
+const { startScheduler, checkSingleMonitor, previewScenario, executeScenario } = require('./scheduler');
 const { sendNotification } = require('./notifications');
 
-// ... existing code ...
+// Server-Side Scenario Execution Endpoint (VISIBLE + Persistent Profile)
+app.post('/run-scenario-live', async (req, res) => {
+    const { url, scenario } = req.body;
 
-// API to get settings
+    if (!url) {
+        return res.status(400).json({ error: 'Missing URL' });
+    }
+
+    console.log(`[RunScenarioLive] Starting VISIBLE execution on ${url}`);
+
+    let visibleContext = null;
+    try {
+        // Close existing headless browser to release UserData lock
+        if (globalBrowser) {
+            console.log(`[RunScenarioLive] Closing headless browser to use persistent profile...`);
+            try { await globalBrowser.close(); } catch (e) { }
+            globalBrowser = null;
+        }
+
+        // Launch persistent context with VISIBLE mode (shares cookies!)
+        const userDataDir = path.join(__dirname, 'chrome_user_data');
+        if (!fs.existsSync(userDataDir)) {
+            try { fs.mkdirSync(userDataDir); } catch (e) { }
+        }
+
+        visibleContext = await chromium.launchPersistentContext(userDataDir, {
+            headless: false, // VISIBLE!
+            ignoreDefaultArgs: ['--enable-automation'],
+            args: [
+                '--disable-gpu',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--start-maximized'
+            ],
+            viewport: { width: 1280, height: 900 },
+            locale: 'nl-NL',
+            timezoneId: 'Europe/Amsterdam',
+            ignoreHTTPSErrors: true
+        });
+
+        await visibleContext.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+
+        const page = await visibleContext.newPage();
+
+        // Navigate to URL
+        console.log(`[RunScenarioLive] Navigating to ${url}`);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+        // Wait for loader to disappear
+        try {
+            await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 5000 });
+        } catch (e) { /* Proceed */ }
+
+        // Small pause so user sees the loaded page
+        await page.waitForTimeout(1000);
+
+        // Execute scenario steps ONE BY ONE with pauses
+        if (scenario && Array.isArray(scenario) && scenario.length > 0) {
+            console.log(`[RunScenarioLive] Executing ${scenario.length} steps...`);
+            for (const step of scenario) {
+                console.log(`[RunScenarioLive] Step: ${step.action} ${step.selector || ''} ${step.value || ''}`);
+                try {
+                    switch (step.action) {
+                        case 'wait':
+                            await page.waitForTimeout(parseInt(step.value) || 1000);
+                            break;
+                        case 'click':
+                            if (step.selector) {
+                                await page.waitForSelector(step.selector, { state: 'visible', timeout: 5000 });
+                                await page.click(step.selector);
+                            }
+                            break;
+                        case 'type':
+                            if (step.selector) {
+                                await page.waitForSelector(step.selector, { state: 'visible', timeout: 5000 });
+                                await page.fill(step.selector, step.value || '');
+                            }
+                            break;
+                        case 'wait_selector':
+                            if (step.selector) {
+                                await page.waitForSelector(step.selector, { state: 'visible', timeout: 10000 });
+                            }
+                            break;
+                    }
+                } catch (stepErr) {
+                    console.error(`[RunScenarioLive] Step failed: ${stepErr.message}`);
+                }
+                // Brief pause between steps so user can follow
+                await page.waitForTimeout(500);
+            }
+        }
+
+        // Wait for final page state to settle (login redirect etc)
+        console.log(`[RunScenarioLive] Waiting for page to settle...`);
+        await page.waitForTimeout(3000);
+
+        // Take screenshot
+        const filename = `live-run-${Date.now()}.png`;
+        const filepath = path.join(__dirname, 'public', 'screenshots', filename);
+        await page.screenshot({ path: filepath, fullPage: true });
+
+        // Keep browser open for 5 seconds so user can inspect result
+        console.log(`[RunScenarioLive] Done! Browser stays open for 5s...`);
+        await page.waitForTimeout(5000);
+
+        // Close visible context (releases lock, next /proxy will relaunch headless)
+        await visibleContext.close();
+        visibleContext = null;
+
+        console.log(`[RunScenarioLive] Completed. Screenshot: ${filename}`);
+        res.json({ success: true, screenshot: filename });
+
+    } catch (error) {
+        console.error('[RunScenarioLive] Error:', error);
+        if (visibleContext) {
+            try { await visibleContext.close(); } catch (e) { }
+        }
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ... existing code ...
 app.get('/settings', (req, res) => {
     db.get("SELECT * FROM settings WHERE id = 1", (err, row) => {
         if (err) {

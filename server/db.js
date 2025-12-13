@@ -71,6 +71,31 @@ function initDb() {
                     console.log('Migrating: Adding ai_prompt column to monitors table...');
                     db.run("ALTER TABLE monitors ADD COLUMN ai_prompt TEXT");
                 }
+                const hasScenarioConfig = rows.some(r => r.name === 'scenario_config');
+                if (!hasScenarioConfig) {
+                    console.log('Migrating: Adding scenario_config column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN scenario_config TEXT");
+                }
+                const hasUnreadCount = rows.some(r => r.name === 'unread_count');
+                if (!hasUnreadCount) {
+                    console.log('Migrating: Adding unread_count column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN unread_count INTEGER DEFAULT 0");
+                }
+                const hasTags = rows.some(r => r.name === 'tags');
+                if (!hasTags) {
+                    console.log('Migrating: Adding tags column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN tags TEXT");
+                }
+                const hasKeywords = rows.some(r => r.name === 'keywords');
+                if (!hasKeywords) {
+                    console.log('Migrating: Adding keywords column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN keywords TEXT");
+                }
+                const hasAiOnlyVisual = rows.some(r => r.name === 'ai_only_visual');
+                if (!hasAiOnlyVisual) {
+                    console.log('Migrating: Adding ai_only_visual column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN ai_only_visual INTEGER DEFAULT 0");
+                }
             } else {
                 console.error("Error checking table info:", err);
             }
@@ -151,6 +176,11 @@ function initDb() {
                 if (!hasAiSummary) {
                     console.log('Migrating: Adding ai_summary column to check_history table...');
                     db.run("ALTER TABLE check_history ADD COLUMN ai_summary TEXT");
+                }
+                const hasHttpStatus = rows.some(r => r.name === 'http_status');
+                if (!hasHttpStatus) {
+                    console.log('Migrating: Adding http_status column to check_history table...');
+                    db.run("ALTER TABLE check_history ADD COLUMN http_status INTEGER");
                 }
             } else {
                 console.error("Error checking check_history table info:", err);

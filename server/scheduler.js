@@ -76,7 +76,8 @@ async function checkMonitors() {
 }
 
 async function checkSingleMonitor(monitor, context = null) {
-    console.log(`Checking monitor ${monitor.id}: ${monitor.url}`);
+    const monitorName = monitor.name || `Monitor ${monitor.id}`;
+    console.log(`[${monitorName}] Checking: ${monitor.url}`);
 
     let internalBrowser = null;
     if (!context) {
@@ -101,10 +102,31 @@ async function checkSingleMonitor(monitor, context = null) {
     }
 
     let page;
+    let httpStatus = null;
     try {
         page = await context.newPage();
-        // Use networkidle to wait for fetches (filters) to complete
-        await page.goto(monitor.url, { waitUntil: 'networkidle', timeout: 60000 });
+
+        // Use domcontentloaded first (faster), then wait for page to stabilize
+        // networkidle can hang forever on sites with continuous activity (ads, websockets)
+        let response;
+        try {
+            response = await page.goto(monitor.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            // Wait a bit for dynamic content to load
+            await page.waitForTimeout(2000);
+            // Try to wait for network to settle, but with short timeout
+            try {
+                await page.waitForLoadState('networkidle', { timeout: 10000 });
+            } catch (e) {
+                // networkidle timed out, that's okay - proceed anyway
+                console.log(`[${monitorName}] networkidle timeout, proceeding with current state`);
+            }
+        } catch (e) {
+            // If even domcontentloaded fails, try with load event
+            console.log(`[${monitorName}] domcontentloaded failed, trying load event`);
+            response = await page.goto(monitor.url, { waitUntil: 'load', timeout: 45000 });
+            await page.waitForTimeout(3000);
+        }
+        httpStatus = response ? response.status() : null;
         let pageTitle = await page.title();
 
         // Smart Wait: Try to wait for the full-screen loader to disappear (same as proxy)
@@ -114,12 +136,39 @@ async function checkSingleMonitor(monitor, context = null) {
             // console.log("Loader wait timeout or not found in scheduler, proceeding...");
         }
 
+        // --- SCENARIO EXECUTION START ---
+        if (monitor.scenario_config) {
+            try {
+                const scenario = typeof monitor.scenario_config === 'string' ? JSON.parse(monitor.scenario_config) : monitor.scenario_config;
+                await executeScenario(page, scenario);
+            } catch (jsonErr) {
+                console.error("Error parsing/executing scenario_config:", jsonErr);
+            }
+        }
+        // --- SCENARIO EXECUTION END ---
+
         // Wait for specific selector if applicable
         if (monitor.selector && monitor.type === 'text') {
             try {
+                // First try waiting for visible
                 await page.waitForSelector(monitor.selector, { state: 'visible', timeout: 5000 });
             } catch (e) {
-                console.log(`Waited for selector ${monitor.selector} but it did not appear visible.`);
+                // If not visible, try attached (exists in DOM but maybe not visible)
+                try {
+                    await page.waitForSelector(monitor.selector, { state: 'attached', timeout: 3000 });
+                    // If found but not visible, try scrolling to it
+                    await page.evaluate((sel) => {
+                        const el = document.querySelector(sel);
+                        if (el) {
+                            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        }
+                    }, monitor.selector);
+                    // Wait for any animations after scroll
+                    await page.waitForTimeout(1000);
+                    console.log(`[${monitorName}] Scrolled to element`);
+                } catch (e2) {
+                    console.log(`[${monitorName}] Element not found in DOM: ${monitor.selector}`);
+                }
             }
         }
 
@@ -158,12 +207,16 @@ async function checkSingleMonitor(monitor, context = null) {
                 // If it's the last attempt, don't wait
                 if (attempt === 3) break;
 
-                console.log(`Attempt ${attempt}: Text empty or null for monitor ${monitor.id}. Retrying in 2s...`);
+                console.log(`[${monitorName}] Attempt ${attempt}: Text empty, retrying in 2s...`);
                 await page.waitForTimeout(2000);
             }
 
             if (text === null) {
-                console.warn(`Element not found for monitor ${monitor.id} after 3 attempts`);
+                console.warn(`[${monitorName}] Element not found after 3 attempts`);
+            } else {
+                // Log what value will be stored
+                const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
+                console.log(`[${monitorName}] Extracted value (${text.length} chars): "${preview}"`);
             }
         }
 
@@ -182,7 +235,37 @@ async function checkSingleMonitor(monitor, context = null) {
         let diffFilename = null;
         let aiSummary = null;
 
-        if (monitor.last_screenshot && fs.existsSync(monitor.last_screenshot)) {
+        // AI-Only Visual Detection Mode
+        if (monitor.ai_only_visual && monitor.type === 'visual') {
+            console.log(`[${monitorName}] Using AI-only visual detection`);
+            // Skip pixel-diff, use AI to determine if there's a meaningful change
+            if (monitor.last_screenshot && fs.existsSync(monitor.last_screenshot)) {
+                const aiPrompt = monitor.ai_prompt || null;
+                aiSummary = await summarizeVisualChange(monitor.last_screenshot, screenshotPath, aiPrompt);
+
+                // Check if AI detected a meaningful change
+                if (aiSummary && !aiSummary.toLowerCase().includes('no significant') && !aiSummary.startsWith('⚠️')) {
+                    visualChange = true;
+                    console.log(`[${monitorName}] AI detected visual change`);
+
+                    // Still generate a diff image for reference
+                    try {
+                        const { default: pixelmatch } = await import('pixelmatch');
+                        const img1 = PNG.sync.read(fs.readFileSync(monitor.last_screenshot));
+                        const img2 = PNG.sync.read(fs.readFileSync(screenshotPath));
+                        const { width, height } = img1;
+                        const diff = new PNG({ width, height });
+                        pixelmatch(img1.data, img2.data, diff.data, width, height, { threshold: 0.1 });
+                        diffFilename = `diff-${monitor.id}-${Date.now()}.png`;
+                        const diffPath = path.join(__dirname, 'public', 'screenshots', diffFilename);
+                        fs.writeFileSync(diffPath, PNG.sync.write(diff));
+                    } catch (e) {
+                        // Diff image generation failed, that's okay
+                    }
+                }
+            }
+        } else if (monitor.last_screenshot && fs.existsSync(monitor.last_screenshot)) {
+            // Standard pixel-diff detection
             try {
                 // Dynamic import for ESM module
                 const { default: pixelmatch } = await import('pixelmatch');
@@ -200,7 +283,7 @@ async function checkSingleMonitor(monitor, context = null) {
                     fs.writeFileSync(diffPath, PNG.sync.write(diff));
                 }
             } catch (e) {
-                console.error(`Error comparing screenshots for monitor ${monitor.id}:`, e);
+                console.error(`[${monitorName}] Error comparing screenshots:`, e);
                 // If comparison fails, treat as no visual change or handle as an error
             }
         }
@@ -210,9 +293,29 @@ async function checkSingleMonitor(monitor, context = null) {
         // Or keep them separate notifications? User asked to "check if there are changes" using AI/Screenshot.
         // Let's OR them together for "change status" but specific notification message.
 
-        if (text !== monitor.last_value || visualChange) {
+        // AI-Only Text Detection Mode (for text/fullpage monitors)
+        let textChange = text !== monitor.last_value;
+        if (monitor.ai_only_visual && monitor.type !== 'visual' && textChange && monitor.last_value) {
+            console.log(`[${monitorName}] Using AI-only text detection`);
+            const aiPrompt = monitor.ai_prompt || null;
+            aiSummary = await summarizeChange(monitor.last_value, text, aiPrompt);
+
+            // Check if AI detected a meaningful change
+            if (aiSummary && (aiSummary.toLowerCase().includes('no significant') ||
+                aiSummary.toLowerCase().includes('no meaningful') ||
+                aiSummary.toLowerCase().includes('no notable') ||
+                aiSummary.toLowerCase().includes('remain the same') ||
+                aiSummary.toLowerCase().includes('unchanged'))) {
+                console.log(`[${monitorName}] AI determined no significant text change`);
+                textChange = false; // Override - AI says it's not meaningful
+            } else if (aiSummary && !aiSummary.startsWith('⚠️')) {
+                console.log(`[${monitorName}] AI detected meaningful text change`);
+            }
+        }
+
+        if (textChange || visualChange) {
             let changeMsg = "";
-            if (text !== monitor.last_value) changeMsg += "Text Content Changed. ";
+            if (textChange) changeMsg += "Text Content Changed. ";
             if (visualChange) changeMsg += "Visual Appearance Changed. ";
 
             const isFirstRun = !monitor.last_check;
@@ -221,7 +324,7 @@ async function checkSingleMonitor(monitor, context = null) {
                 changed = true;
                 status = 'changed';
 
-                console.log(`Change detected for Monitor ${monitor.id}`);
+                console.log(`[${monitorName}] Change detected`);
 
                 // Generate HTML Diff AND Text Diff for Push
                 let diffHtml = '';
@@ -260,7 +363,6 @@ async function checkSingleMonitor(monitor, context = null) {
                 }
 
                 const identifier = monitor.name || pageTitle || `Monitor ${monitor.id}`;
-                let aiSummary = null;
                 let finalChangeMsg = changeMsg;
                 // AI Prompt from monitor specific settings
                 const aiPrompt = monitor.ai_prompt || null;
@@ -335,22 +437,46 @@ async function checkSingleMonitor(monitor, context = null) {
                 let shouldNotify = true;
                 if (monitor.notify_config) {
                     try {
-                        const rules = JSON.parse(monitor.notify_config);
+                        const config = typeof monitor.notify_config === 'string'
+                            ? JSON.parse(monitor.notify_config)
+                            : monitor.notify_config;
                         const currentText = (text || '').toLowerCase();
+                        const method = config.method || 'all';
+                        const threshold = (config.threshold || '').toLowerCase();
 
-                        for (const rule of rules) {
-                            if (!rule.value) continue;
-                            const threshold = rule.value.toLowerCase();
-                            const method = rule.method || 'contains'; // contains, not_contains, starts_with, ends_with
-
-                            if (method === 'contains') {
-                                shouldNotify = currentText.includes(threshold);
-                                console.log(`Rule Check (Contains): "${currentText}" includes "${threshold}" ? ${shouldNotify}`);
-                            } else if (method === 'not_contains') {
-                                shouldNotify = !currentText.includes(threshold);
-                                console.log(`Rule Check (Not Contains): "${currentText}" !includes "${threshold}" ? ${shouldNotify}`);
+                        if (method === 'contains' && threshold) {
+                            shouldNotify = currentText.includes(threshold);
+                            console.log(`Rule Check (Contains): includes "${threshold}" ? ${shouldNotify}`);
+                        } else if (method === 'not_contains' && threshold) {
+                            shouldNotify = !currentText.includes(threshold);
+                            console.log(`Rule Check (Not Contains): !includes "${threshold}" ? ${shouldNotify}`);
+                        } else if (method === 'value_lt' && threshold) {
+                            const numVal = parseFloat(text);
+                            const numThreshold = parseFloat(threshold);
+                            shouldNotify = !isNaN(numVal) && !isNaN(numThreshold) && numVal < numThreshold;
+                            console.log(`Rule Check (Value <): ${numVal} < ${numThreshold} ? ${shouldNotify}`);
+                        } else if (method === 'value_gt' && threshold) {
+                            const numVal = parseFloat(text);
+                            const numThreshold = parseFloat(threshold);
+                            shouldNotify = !isNaN(numVal) && !isNaN(numThreshold) && numVal > numThreshold;
+                            console.log(`Rule Check (Value >): ${numVal} > ${numThreshold} ? ${shouldNotify}`);
+                        } else if (method === 'ai_focus') {
+                            // Only notify if AI summary indicates relevance to the focus
+                            if (aiSummary && monitor.ai_prompt) {
+                                const focusLower = monitor.ai_prompt.toLowerCase();
+                                const summaryLower = aiSummary.toLowerCase();
+                                // Check if AI mentioned something related to the focus, or didn't say "no significant"
+                                shouldNotify = !summaryLower.includes('no significant') &&
+                                    !summaryLower.includes('no meaningful') &&
+                                    !summaryLower.includes('unchanged') &&
+                                    !summaryLower.startsWith('⚠️');
+                                console.log(`Rule Check (AI Focus): AI relevant to "${monitor.ai_prompt}" ? ${shouldNotify}`);
+                            } else if (!aiSummary) {
+                                // No AI summary available, allow notification
+                                shouldNotify = true;
                             }
                         }
+                        // 'all' method: shouldNotify stays true
                     } catch (e) {
                         console.error("Error parsing notify_config:", e);
                     }
@@ -359,10 +485,10 @@ async function checkSingleMonitor(monitor, context = null) {
                 if (shouldNotify) {
                     sendNotification(subject, message, htmlMessage, diffText, diffImagePath);
                 } else {
-                    console.log(`Notification suppressed by rule for Monitor ${monitor.id}`);
+                    console.log(`[${monitorName}] Notification suppressed by rule`);
                 }
             } else {
-                console.log(`First run for Monitor ${monitor.id} - Saving initial value without alert.`);
+                console.log(`[${monitorName}] First run - Saving initial value without alert.`);
                 // Treat as changed for DB update (to save values), but status 'unchanged' for history/UI
                 changed = true;
                 status = 'unchanged';
@@ -373,20 +499,90 @@ async function checkSingleMonitor(monitor, context = null) {
             // diffFilename is just the filename (or null).
             // We'll store them as-is. Frontend extracts filename.
             db.run(
-                `INSERT INTO check_history (monitor_id, status, value, created_at, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [monitor.id, status, text, nowStr, screenshotPath, monitor.last_screenshot, diffFilename ? path.join(__dirname, 'public', 'screenshots', diffFilename) : null, aiSummary],
+                `INSERT INTO check_history (monitor_id, status, value, created_at, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary, http_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [monitor.id, status, text, nowStr, screenshotPath, monitor.last_screenshot, diffFilename ? path.join(__dirname, 'public', 'screenshots', diffFilename) : null, aiSummary, httpStatus],
                 (err) => {
                     if (err) console.error("DB Insert Error (History):", err.message);
-                    else console.log(`DB Insert Success (History) for Monitor ${monitor.id}`);
+                    else console.log(`[${monitorName}] History saved to DB`);
                 }
             );
         } else {
-            console.log(`No change for Monitor ${monitor.id}`);
+            console.log(`[${monitorName}] No change`);
             // Log history without screenshot paths for unchanged status to save space
             db.run(
-                `INSERT INTO check_history (monitor_id, status, value, created_at) VALUES (?, ?, ?, ?)`,
-                [monitor.id, status, text, nowStr]
+                `INSERT INTO check_history (monitor_id, status, value, created_at, http_status) VALUES (?, ?, ?, ?, ?)`,
+                [monitor.id, status, text, nowStr, httpStatus]
             );
+        }
+
+        // Keyword Alert Detection (independent of change detection)
+        if (monitor.keywords) {
+            try {
+                const keywords = JSON.parse(monitor.keywords);
+                const contentLower = (text || '').toLowerCase();
+                const lastValueLower = (monitor.last_value || '').toLowerCase();
+
+                for (const kw of keywords) {
+                    if (!kw.text) continue;
+                    const keywordLower = kw.text.toLowerCase();
+                    const foundNow = contentLower.includes(keywordLower);
+                    const foundBefore = lastValueLower.includes(keywordLower);
+
+                    // Check mode: 'appears' (default), 'disappears', or 'any'
+                    const mode = kw.mode || 'appears';
+                    let shouldAlert = false;
+                    let alertMessage = '';
+
+                    if (mode === 'appears' && foundNow && !foundBefore) {
+                        shouldAlert = true;
+                        alertMessage = `Keyword "${kw.text}" appeared`;
+                    } else if (mode === 'disappears' && !foundNow && foundBefore) {
+                        shouldAlert = true;
+                        alertMessage = `Keyword "${kw.text}" disappeared`;
+                    } else if (mode === 'any') {
+                        if (foundNow && !foundBefore) {
+                            shouldAlert = true;
+                            alertMessage = `Keyword "${kw.text}" appeared`;
+                        } else if (!foundNow && foundBefore) {
+                            shouldAlert = true;
+                            alertMessage = `Keyword "${kw.text}" disappeared`;
+                        }
+                    }
+
+                    if (shouldAlert) {
+                        console.log(`[${monitorName}] Keyword Alert: ${alertMessage}`);
+                        const identifier = monitor.name || monitor.url;
+                        const subject = `🔑 Keyword Alert: ${identifier}`;
+                        const message = `${alertMessage}\n\nMonitor: ${identifier}\nURL: ${monitor.url}`;
+                        const htmlMessage = `
+                            <h2>🔑 Keyword Alert</h2>
+                            <p><strong>Monitor:</strong> ${identifier}</p>
+                            <p><strong>URL:</strong> <a href="${monitor.url}">${monitor.url}</a></p>
+                            <p><strong>Alert:</strong> ${alertMessage}</p>
+                            <p><small>Sent by DeltaWatch</small></p>
+                        `;
+                        sendNotification(subject, message, htmlMessage, null, null);
+                    }
+                }
+            } catch (e) {
+                console.error('Error processing keywords:', e);
+            }
+        }
+
+        // Uptime/Downtime Alert (HTTP status check)
+        if (httpStatus && httpStatus >= 400) {
+            console.log(`[${monitorName}] Downtime detected: HTTP ${httpStatus}`);
+            const identifier = monitor.name || monitor.url;
+            const subject = `🔴 Downtime Alert: ${identifier}`;
+            const message = `HTTP ${httpStatus} Error\n\nMonitor: ${identifier}\nURL: ${monitor.url}\nStatus Code: ${httpStatus}`;
+            const htmlMessage = `
+                <h2>🔴 Downtime Alert</h2>
+                <p><strong>Monitor:</strong> ${identifier}</p>
+                <p><strong>URL:</strong> <a href="${monitor.url}">${monitor.url}</a></p>
+                <p><strong>HTTP Status:</strong> ${httpStatus}</p>
+                <p><small>Sent by DeltaWatch</small></p>
+            `;
+            sendNotification(subject, message, htmlMessage, null, null);
         }
 
         // Cleanup OLD screenshot to save space (since we track 'last_screenshot')
@@ -401,13 +597,13 @@ async function checkSingleMonitor(monitor, context = null) {
         if (changed) {
             if (monitor.type === 'visual') {
                 db.run(
-                    `UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ? WHERE id = ?`,
+                    `UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ?, unread_count = unread_count + 1 WHERE id = ?`,
                     [nowStr, text, screenshotPath, nowStr, monitor.id],
                     (err) => { if (err) console.error("Update Error:", err); }
                 );
             } else {
                 db.run(
-                    `UPDATE monitors SET last_check = ?, last_value = ?, last_change = ? WHERE id = ?`,
+                    `UPDATE monitors SET last_check = ?, last_value = ?, last_change = ?, unread_count = unread_count + 1 WHERE id = ?`,
                     [nowStr, text, nowStr, monitor.id],
                     (err) => { if (err) console.error("Update Error:", err); }
                 );
@@ -433,13 +629,113 @@ async function checkSingleMonitor(monitor, context = null) {
         }
 
     } catch (error) {
-        console.error(`Error checking monitor ${monitor.id}:`, error.message);
+        console.error(`[${monitorName}] Error:`, error.message);
         // Log error history
         db.run(`INSERT INTO check_history (monitor_id, status, response_time, created_at, value) VALUES (?, ?, ?, ?, ?)`, [monitor.id, 'error', 0, new Date().toISOString(), error.message]);
     } finally {
         if (page) await page.close();
         if (internalBrowser) await internalBrowser.close();
     }
+}
+
+async function executeScenario(page, scenario) {
+    if (Array.isArray(scenario) && scenario.length > 0) {
+        console.log(`Executing scenario with ${scenario.length} steps.`);
+        for (const step of scenario) {
+            console.log(`- Step: ${step.action} ${step.selector || ''} ${step.value || ''}`);
+            try {
+                switch (step.action) {
+                    case 'wait':
+                        await page.waitForTimeout(parseInt(step.value) || 1000);
+                        break;
+                    case 'click':
+                        if (step.selector) {
+                            await page.waitForSelector(step.selector, { state: 'visible', timeout: 5000 });
+                            await page.click(step.selector);
+                        }
+                        break;
+                    case 'type':
+                        if (step.selector) {
+                            await page.waitForSelector(step.selector, { state: 'visible', timeout: 5000 });
+                            await page.fill(step.selector, step.value || '');
+                        }
+                        break;
+                    case 'wait_selector':
+                        if (step.selector) {
+                            await page.waitForSelector(step.selector, { state: 'visible', timeout: 10000 });
+                        }
+                        break;
+                    case 'scroll':
+                        await page.evaluate((y) => window.scrollBy(0, y), parseInt(step.value) || 500);
+                        break;
+                    case 'key':
+                        if (step.value) {
+                            await page.keyboard.press(step.value);
+                        }
+                        break;
+                }
+            } catch (stepErr) {
+                console.error(`Error in scenario step ${step.action}:`, stepErr.message);
+            }
+        }
+        console.log('Scenario execution completed.');
+    }
+}
+
+async function previewScenario(url, scenarioConfig, proxySettings = null) {
+    console.log(`Previewing scenario for ${url}`);
+
+    // Launch Browser
+    const launchOptions = { headless: true };
+    if (proxySettings && proxySettings.server) {
+        launchOptions.proxy = { server: proxySettings.server };
+        if (proxySettings.username && proxySettings.password) {
+            launchOptions.proxy.username = proxySettings.username;
+            launchOptions.proxy.password = proxySettings.password;
+        } else if (proxySettings.auth) {
+            // Fallback if auth string passed
+            const [username, password] = proxySettings.auth.split(':');
+            launchOptions.proxy.username = username;
+            launchOptions.proxy.password = password;
+        }
+    }
+
+    const browser = await chromium.launch(launchOptions);
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let screenshotFilename = null;
+
+    try {
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+        // Cleanup overlays before scenario (consistency)
+        try {
+            await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 5000 });
+        } catch (e) { }
+
+        // Execute Scenario
+        if (scenarioConfig) {
+            const scenario = typeof scenarioConfig === 'string' ? JSON.parse(scenarioConfig) : scenarioConfig;
+            await executeScenario(page, scenario);
+        }
+
+        // Wait a bit validation
+        await page.waitForTimeout(1000);
+
+        // Take Screenshot
+        const filename = `preview-${Date.now()}.png`;
+        const filepath = path.join(__dirname, 'public', 'screenshots', filename);
+        await page.screenshot({ path: filepath, fullPage: true });
+        screenshotFilename = filename;
+
+    } catch (e) {
+        console.error("Preview Error:", e);
+        throw e;
+    } finally {
+        await browser.close();
+    }
+
+    return screenshotFilename;
 }
 
 function startScheduler() {
@@ -450,4 +746,4 @@ function startScheduler() {
     console.log('Scheduler started.');
 }
 
-module.exports = { startScheduler, checkSingleMonitor };
+module.exports = { startScheduler, checkSingleMonitor, previewScenario, executeScenario };

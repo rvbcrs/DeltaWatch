@@ -7,7 +7,7 @@ import { useAuth } from './contexts/AuthContext';
 
 function Editor() {
   console.log("Editor Component Loaded - Cache Bust");
-  const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+  const API_BASE = '';
   const [url, setUrl] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
   const [selectedElement, setSelectedElement] = useState(null)

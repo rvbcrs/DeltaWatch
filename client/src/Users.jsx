@@ -5,7 +5,7 @@ import { useAuth } from './contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 function Users() {
-    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+    const API_BASE = '';
     const { showToast } = useToast();
     const { authFetch, user } = useAuth();
     const navigate = useNavigate();

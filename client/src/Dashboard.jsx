@@ -38,7 +38,7 @@ const Dashboard = () => {
   const { showToast } = useToast()
   const { confirm } = useDialog()
   const { authFetch } = useAuth()
-  const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+    const API_BASE = '';
 
   useEffect(() => {
     fetchMonitors()

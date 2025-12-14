@@ -6,7 +6,7 @@ function StatsOverview() {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const { authFetch } = useAuth();
-    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+    const API_BASE = '';
 
     const [error, setError] = useState(null);
 

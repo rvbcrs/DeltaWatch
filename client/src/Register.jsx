@@ -11,7 +11,7 @@ export default function Register() {
     const navigate = useNavigate();
     const { showToast } = useToast();
     const [isSetupMode, setIsSetupMode] = useState(false);
-    const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+    const API_BASE = '';
 
     useEffect(() => {
         fetch(`${API_BASE}/api/auth/setup-status`)

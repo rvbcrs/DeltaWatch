@@ -4,7 +4,7 @@ import { useToast } from './contexts/ToastContext';
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext';
 function Settings() {
-    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+    const API_BASE = '';
     const navigate = useNavigate();
     const { showToast } = useToast();
     const { authFetch, user } = useAuth(); // Ensure user is destructured

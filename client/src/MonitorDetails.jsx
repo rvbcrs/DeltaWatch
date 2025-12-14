@@ -11,7 +11,7 @@ function MonitorDetails() {
     const { id } = useParams();
     const navigate = useNavigate();
     const location = useLocation();
-    const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
+    const API_BASE = '';
     const [monitor, setMonitor] = useState(null);
     const [loading, setLoading] = useState(true);
     const [isChecking, setIsChecking] = useState(false);

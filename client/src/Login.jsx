@@ -33,7 +33,7 @@ export default function Login() {
             return;
         }
          try {
-             const res = await fetch(`${import.meta.env.VITE_API_BASE || 'http://localhost:3000'}/api/auth/resend-verification`, {
+             const res = await fetch(`/api/auth/resend-verification`, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
                  body: JSON.stringify({ email })
@@ -107,7 +107,7 @@ export default function Login() {
                     <GoogleLogin
                         onSuccess={async (credentialResponse) => {
                             try {
-                                const res = await fetch(`${import.meta.env.VITE_API_BASE || 'http://localhost:3000'}/api/auth/google`, {
+                                const res = await fetch(`/api/auth/google`, {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ token: credentialResponse.credential })

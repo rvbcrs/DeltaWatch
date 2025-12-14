@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Save, Bell, Mail, Smartphone, Globe, ArrowLeft, Download, Upload, Eye, EyeOff, Brain, Shield, Search } from 'lucide-react';
+import { Trash2, Users, Save, Bell, Mail, Smartphone, Globe, ArrowLeft, Download, Upload, Eye, EyeOff, Brain, Shield, Search } from 'lucide-react';
 import { useToast } from './contexts/ToastContext';
 import { useNavigate } from 'react-router-dom'
-
+import { useAuth } from './contexts/AuthContext';
 function Settings() {
     const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
     const navigate = useNavigate();
-    const [loading, setLoading] = useState(true);
-    const [showPassword, setShowPassword] = useState(false);
     const { showToast } = useToast();
+    const { authFetch, user } = useAuth(); // Ensure user is destructured
+
     const [settings, setSettings] = useState({
         email_enabled: false,
         email_host: '',
@@ -33,8 +33,10 @@ function Settings() {
         webhook_url: ''
     });
 
+    const [showPassword, setShowPassword] = useState(false);
+
     useEffect(() => {
-        fetch(`${API_BASE}/settings`)
+        authFetch(`${API_BASE}/settings`)
             .then(res => res.json())
             .then(data => {
                 if (data.message === 'success' && data.data) {
@@ -63,7 +65,7 @@ function Settings() {
 
     const handleSave = async () => {
         try {
-            const res = await fetch(`${API_BASE}/settings`, {
+            const res = await authFetch(`${API_BASE}/settings`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -87,13 +89,13 @@ function Settings() {
         // The endpoint reads from DB. So we MUST save first.
         try {
              // Save first automatically? 
-             await fetch('http://localhost:3000/settings', {
+             await authFetch(`${API_BASE}/settings`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
             });
             
-            const res = await fetch('http://localhost:3000/test-notification', { method: 'POST' });
+            const res = await authFetch(`${API_BASE}/test-notification`, { method: 'POST' });
             const data = await res.json();
             if (data.message === 'success') {
                 showToast('Test notification sent! Check your inbox/app.', 'success');
@@ -112,7 +114,7 @@ function Settings() {
     const handleFetchModels = async () => {
         setFetchingModels(true);
         try {
-            const res = await fetch(`${API_BASE}/api/models`, {
+            const res = await authFetch(`${API_BASE}/api/models`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -135,6 +137,28 @@ function Settings() {
             setFetchingModels(false);
         }
     };
+
+    const handleExport = async () => {
+        try {
+            const res = await authFetch(`${API_BASE}/data/export`);
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `monitors-export-${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } else {
+                showToast('Export failed', 'error');
+            }
+        } catch (e) {
+            console.error(e);
+            showToast('Export error', 'error');
+        }
+    }
 
     return (
         <div className="flex h-full w-full bg-[#0d1117] flex-col text-white">
@@ -382,7 +406,7 @@ function Settings() {
                         <h2 className="text-lg font-semibold text-white mb-4">Data Management</h2>
                         <div className="flex gap-4">
                             <button 
-                                onClick={() => window.open(`${API_BASE}/data/export`, '_blank')}
+                                onClick={handleExport}
                                 className="flex-1 bg-[#21262d] text-gray-300 py-3 rounded-lg hover:bg-[#30363d] border border-gray-700 font-bold transition-colors flex items-center justify-center gap-2"
                             >
                                 <Download size={20} /> Export Monitors
@@ -400,7 +424,7 @@ function Settings() {
                                         reader.onload = async (event) => {
                                             try {
                                                 const json = JSON.parse(event.target.result);
-                                                const res = await fetch(`${API_BASE}/data/import`, {
+                                                const res = await authFetch(`${API_BASE}/data/import`, {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
                                                     body: JSON.stringify(json)

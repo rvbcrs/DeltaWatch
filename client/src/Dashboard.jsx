@@ -1,35 +1,35 @@
+import StatsOverview from './components/StatsOverview'
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Trash2, Edit, Plus, ExternalLink, Filter, ArrowDown, Pause, Play, ArrowRight, RefreshCw } from 'lucide-react'
 import { useToast } from './contexts/ToastContext'
 import { useDialog } from './contexts/DialogContext'
+import { useAuth } from './contexts/AuthContext'
 
-const TimeAgo = ({ date }) => {
-    const [timeString, setTimeString] = useState('');
-    
-    useEffect(() => {
-        const updateTime = () => {
-            if (!date) return setTimeString('');
-            const now = new Date();
-            const past = new Date(date);
-            const diffInSeconds = Math.floor((now - past) / 1000);
-            
-            if (diffInSeconds < 5) setTimeString('just now');
-            else if (diffInSeconds < 60) setTimeString(`${diffInSeconds}s ago`);
-            else if (diffInSeconds < 3600) setTimeString(`${Math.floor(diffInSeconds / 60)}m ago`);
-            else if (diffInSeconds < 86400) setTimeString(`${Math.floor(diffInSeconds / 3600)}h ago`);
-            else setTimeString(`${Math.floor(diffInSeconds / 86400)}d ago`);
-        };
-        
-        updateTime();
-        const interval = setInterval(updateTime, 60000); // Update every minute
-        return () => clearInterval(interval);
-    }, [date]);
-    
-    return <span>{timeString}</span>;
+// ... existing code ...
+
+const timeAgo = (dateParam) => {
+    if (!dateParam) return null;
+    const date = typeof dateParam === 'object' ? dateParam : new Date(dateParam);
+    const today = new Date();
+    const seconds = Math.round((today - date) / 1000);
+    const minutes = Math.round(seconds / 60);
+    const hours = Math.round(minutes / 60);
+    const days = Math.round(hours / 24);
+
+    if (seconds < 5) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    return `${days}d ago`;
 };
 
-function Dashboard() {
+const TimeAgo = ({ date }) => {
+    const timeString = timeAgo(date);
+    return <span>{timeString}</span>; // Displays relative time
+};
+
+const Dashboard = () => {
   const [monitors, setMonitors] = useState([])
   const [loading, setLoading] = useState(true)
   const [checkingMonitors, setCheckingMonitors] = useState(new Set())
@@ -37,6 +37,7 @@ function Dashboard() {
   const navigate = useNavigate()
   const { showToast } = useToast()
   const { confirm } = useDialog()
+  const { authFetch } = useAuth()
   const API_BASE = import.meta.env.DEV ? 'http://localhost:3000' : '';
 
   useEffect(() => {
@@ -48,7 +49,7 @@ function Dashboard() {
   const fetchMonitors = async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-        const res = await fetch(`${API_BASE}/monitors`)
+        const res = await authFetch(`${API_BASE}/monitors`)
         const data = await res.json()
         if (data.message === 'success') {
             setMonitors(data.data)
@@ -74,7 +75,7 @@ function Dashboard() {
       if (!confirmed) return;
 
       try {
-          await fetch(`${API_BASE}/monitors/${id}`, { method: 'DELETE' })
+          await authFetch(`${API_BASE}/monitors/${id}`, { method: 'DELETE' })
           fetchMonitors()
           showToast('Monitor deleted successfully', 'success')
       } catch (e) {
@@ -97,7 +98,7 @@ function Dashboard() {
 
       console.log('Dashboard: Sending request...');
       try {
-          const res = await fetch(`${API_BASE}/monitors/${monitor.id}/check`, { method: 'POST' });
+          const res = await authFetch(`${API_BASE}/monitors/${monitor.id}/check`, { method: 'POST' });
           console.log('Dashboard: Response status:', res.status);
           if(res.ok) {
               await fetchMonitors(); // Refresh list immediately
@@ -127,52 +128,27 @@ function Dashboard() {
       navigate(`/edit/${monitor.id}`)
   }
   
-  // Quick Edit Interval Modal logic (if needed, but moving to visual editor mostly)
-  // We can keep the quick edit for interval if desired, but user asked for visual edit mostly.
-  // For now let's use the Visual Editor for everything to reduce complexity.
-  
   const handleToggleStatus = async (monitor, e) => {
       if (e) {
         e.preventDefault();
         e.stopPropagation();
       }
       try {
-          // Optimistic update
           setMonitors(monitors.map(m => m.id === monitor.id ? { ...m, active: !m.active } : m));
-          
-          await fetch(`${API_BASE}/monitors/${monitor.id}/status`, {
-              method: 'PATCH',
+           await authFetch(`${API_BASE}/monitors/${monitor.id}`, {
+              method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ active: !monitor.active })
           });
       } catch (e) {
           console.error(e);
-          fetchMonitors(); // Revert on error
+          fetchMonitors(); 
       }
-  }
-  
-
-  const timeAgo = (dateParam) => {
-    if (!dateParam) return null;
-    const date = typeof dateParam === 'object' ? dateParam : new Date(dateParam);
-    const today = new Date();
-    const seconds = Math.round((today - date) / 1000);
-    const minutes = Math.round(seconds / 60);
-    const hours = Math.round(minutes / 60);
-    const days = Math.round(hours / 24);
-
-    if (seconds < 5) return 'just now';
-    if (seconds < 60) return `${seconds}s ago`;
-    if (minutes < 60) return `${minutes}m ago`;
-    if (hours < 24) return `${hours}h ago`;
-    if (hours < 24) return `${hours}h ago`;
-    return `${days}d ago`;
   }
 
   const formatDate = (dateString) => {
       if (!dateString) return 'Unknown Date';
       try {
-          // Handle SQLite "YYYY-MM-DD HH:MM:SS" -> ISO
           const isoString = dateString.toString().replace(' ', 'T');
           const date = new Date(isoString);
           if (isNaN(date.getTime())) return 'Invalid Date';
@@ -182,12 +158,10 @@ function Dashboard() {
       }
   }
 
-  // Compute all unique tags from monitors
   const allTags = [...new Set(monitors.flatMap(m => {
     try { return JSON.parse(m.tags || '[]'); } catch { return []; }
   }))].sort();
 
-  // Filter monitors by selected tag
   const filteredMonitors = selectedTag 
     ? monitors.filter(m => {
         try { 
@@ -196,8 +170,7 @@ function Dashboard() {
         } catch { return false; }
       })
     : monitors;
-
-  return (
+    return (
     <div className="h-full flex flex-col">
        <div className="flex justify-between items-center mb-4">
             <h1 className="text-2xl font-bold text-white">Deltas</h1>
@@ -205,6 +178,8 @@ function Dashboard() {
                 <Plus size={16} /> New
             </Link>
         </div>
+
+        <StatsOverview />
 
         {/* Tag Filter Pills */}
         {allTags.length > 0 && (

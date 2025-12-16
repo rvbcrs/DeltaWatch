@@ -13,3 +13,8 @@ services:
       - DATA_DIR=/app/apps/web/server/data
     volumes:
       - ./apps/web/server/data:/app/apps/web/server/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 1024M

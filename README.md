@@ -1,12 +1,31 @@
-# DeltaWatch - Website Change Monitor
+# DeltaWatch
 
-A powerful web application for monitoring website changes, with support for text extraction, visual comparisons, and automated notifications.
+A powerful monorepo for monitoring website changes, with support for text extraction, visual comparisons, automated notifications, and a native mobile app.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)
+![React Native](https://img.shields.io/badge/React_Native-20232A?style=flat&logo=react&logoColor=61DAFB)
+![Expo](https://img.shields.io/badge/Expo-000020?style=flat&logo=expo&logoColor=white)
 ![Express](https://img.shields.io/badge/Express-000000?style=flat&logo=express&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-07405E?style=flat&logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-F69220?style=flat&logo=pnpm&logoColor=white)
+
+## Monorepo Structure
+
+```
+DeltaWatch/
+├── apps/
+│   ├── web/
+│   │   ├── client/          # React web dashboard
+│   │   └── server/          # Express API server
+│   └── mobile/              # React Native (Expo) mobile app
+├── packages/
+│   └── shared/              # Shared TypeScript types & utilities
+├── extension/               # Chrome browser extension
+├── package.json             # Root workspace config
+└── pnpm-workspace.yaml
+```
 
 ## Features
 
@@ -15,6 +34,11 @@ A powerful web application for monitoring website changes, with support for text
 - **Full Page Monitoring** - Track entire page content changes
 - **Visual Monitoring** - Screenshot comparison with pixel-level diff detection
 
+### Apps
+- **Web Dashboard** - Full-featured React web application
+- **Mobile App** - Native iOS/Android app with Expo
+- **Browser Extension** - Create monitors directly from any webpage
+
 ### Notifications
 - Email notifications (SMTP)
 - Push notifications (Pushover, Gotify)
@@ -22,75 +46,68 @@ A powerful web application for monitoring website changes, with support for text
 - AI-powered change summaries (OpenAI)
 
 ### Additional Features
-- **Browser Extension** - Create monitors directly from any webpage
 - **Scheduled Checks** - Configurable intervals (1m to 24h)
 - **History Timeline** - Track all changes with diff visualization
 - **Tags & Filtering** - Organize monitors with custom tags
 - **Keyword Alerts** - Trigger notifications when specific keywords appear/disappear
 - **Multi-user Support** - Admin and user roles with email verification
-- **Public Status Page** - Share monitor status publicly
+- **Swipe to Delete** - Mobile-friendly gesture controls
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| **Server** | Express 5, TypeScript, SQLite3 |
-| **Client** | React 18, Vite, Tailwind CSS |
+| **Web Server** | Express 5, TypeScript, SQLite3 |
+| **Web Client** | React 18, Vite, Tailwind CSS |
+| **Mobile App** | React Native, Expo, Expo Router |
+| **Shared Package** | TypeScript types & utilities |
 | **Browser Automation** | Playwright |
 | **Charts** | Recharts |
 | **Auth** | JWT, bcrypt, Google OAuth |
-
-## Project Structure
-
-```
-website-change-monitor/
-├── server/             # Express API server
-│   ├── index.ts       # Main entry point
-│   ├── browserPool.ts # Playwright browser management
-│   ├── env.ts         # Environment configuration
-│   └── openapi.json   # API documentation
-├── client/             # React frontend
-│   ├── src/
-│   │   ├── Dashboard.tsx
-│   │   ├── MonitorDetails.tsx
-│   │   ├── Editor.tsx      # Visual selector tool
-│   │   └── contexts/       # Auth, Toast, Dialog
-│   └── vite.config.ts
-├── extension/          # Chrome browser extension
-│   ├── popup.html
-│   ├── popup.js
-│   └── content.js
-├── Dockerfile
-└── docker-compose.yml
-```
+| **Package Manager** | pnpm workspaces |
 
 ## Getting Started
 
 ### Prerequisites
 - Node.js v20+ (required for Playwright)
-- npm or pnpm
+- pnpm (`npm install -g pnpm`)
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/website-change-monitor.git
-cd website-change-monitor
+git clone https://github.com/rvbcrs/DeltaWatch.git
+cd DeltaWatch
 
 # Install all dependencies
-npm run install:all
+pnpm install
 
-# Start development servers (client + server)
-npm start
+# Build the shared package
+pnpm --filter @deltawatch/shared build
+
+# Start web server + client
+pnpm start
 ```
 
-The app will be available at:
+The web app will be available at:
 - **Frontend**: http://localhost:5174
 - **API**: http://localhost:3000
 
+### Running the Mobile App
+
+```bash
+# Navigate to mobile app
+cd apps/mobile
+
+# Start Expo development server
+npx expo start
+```
+
+Then scan the QR code with Expo Go (Android) or Camera app (iOS).
+
 ### Environment Variables
 
-Create a `.env` file in the `server/` directory:
+Create a `.env` file in `apps/web/server/`:
 
 ```env
 # Required
@@ -127,6 +144,20 @@ docker build -t deltawatch .
 docker run -p 3000:3000 -v ./data:/app/server/data deltawatch
 ```
 
+## Packages
+
+### @deltawatch/shared
+
+Shared TypeScript code between web and mobile apps:
+
+```typescript
+// Types
+import { Monitor, HistoryRecord, User, ApiResponse } from '@deltawatch/shared';
+
+// Utilities
+import { timeAgo, formatDate, cleanValue, getStatusColor } from '@deltawatch/shared';
+```
+
 ## Browser Extension
 
 The Chrome extension allows you to create monitors directly from any webpage:
@@ -151,9 +182,24 @@ Interactive API documentation is available at `/api/docs` when the server is run
 | `DELETE` | `/monitors/:id` | Delete monitor |
 | `DELETE` | `/monitors/:id/history/:hid` | Delete history record |
 
-## Related Projects
+## Scripts
 
-- **[DeltaWatch Mobile](https://github.com/yourusername/deltawatch-mobile)** - React Native mobile app companion
+```bash
+# Start web server + client
+pnpm start
+
+# Build shared package
+pnpm --filter @deltawatch/shared build
+
+# Start only the web server
+pnpm --filter @deltawatch/web-server start
+
+# Start only the web client
+pnpm --filter @deltawatch/web-client dev
+
+# Start mobile app
+cd apps/mobile && npx expo start
+```
 
 ## License
 

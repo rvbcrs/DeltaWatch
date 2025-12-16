@@ -1,8 +1,22 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { 
+  Monitor as SharedMonitor, 
+  User as SharedUser, 
+  AuthResponse,
+  HistoryRecord 
+} from '@deltawatch/shared';
 
 const TOKEN_KEY = 'deltawatch_token';
 const SERVER_URL_KEY = 'deltawatch_server_url';
+
+// Re-export shared types with extended history for mobile
+export interface Monitor extends SharedMonitor {
+  history?: Array<HistoryRecord & { id: number }>;
+}
+
+export type User = SharedUser;
+export type LoginResponse = AuthResponse;
 
 // Platform-agnostic storage (SecureStore on mobile, localStorage on web)
 const storage = {
@@ -27,38 +41,6 @@ const storage = {
     await SecureStore.deleteItemAsync(key);
   },
 };
-
-export interface Monitor {
-  id: number;
-  name?: string;
-  url: string;
-  selector: string;
-  type: 'text' | 'visual';
-  interval: string;
-  active: boolean;
-  last_check?: string;
-  last_value?: string;
-  last_change?: string;
-  last_screenshot?: string;
-  unread_count?: number;
-  tags?: string;
-  history?: Array<{
-    id: number;
-    status: string;
-    created_at: string;
-  }>;
-}
-
-export interface User {
-  id: number;
-  email: string;
-  role: string;
-}
-
-export interface LoginResponse {
-  token: string;
-  user: User;
-}
 
 class ApiService {
   private serverUrl: string = '';

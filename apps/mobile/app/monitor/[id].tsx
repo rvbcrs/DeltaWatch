@@ -16,15 +16,7 @@ import {
     StyleSheet,
     TouchableOpacity
 } from 'react-native';
-
-interface HistoryRecord {
-  id: number;
-  status: 'changed' | 'unchanged' | 'error';
-  value?: string;
-  created_at: string;
-  screenshot_path?: string;
-  http_status?: number;
-}
+import { timeAgo, formatDate, cleanValue, getStatusColor, type HistoryRecord } from '@deltawatch/shared';
 
 interface MonitorDetail {
   id: number;
@@ -37,34 +29,6 @@ interface MonitorDetail {
   last_value?: string;
   tags?: string;
   history: HistoryRecord[];
-}
-
-function timeAgo(dateParam: string): string {
-  const date = new Date(dateParam.replace(' ', 'T'));
-  const now = new Date();
-  const seconds = Math.round((now.getTime() - date.getTime()) / 1000);
-  
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
-
-function formatDate(dateString: string): string {
-  try {
-    const date = new Date(dateString.replace(' ', 'T'));
-    return date.toLocaleString('nl-NL', { 
-      day: '2-digit', 
-      month: 'short', 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-  } catch {
-    return dateString;
-  }
 }
 
 // Type badge component
@@ -81,6 +45,7 @@ function TypeBadge({ type }: { type: string }) {
 
 // Status badge for history items
 function StatusBadge({ status }: { status: string }) {
+  const color = getStatusColor(status as 'unchanged' | 'changed' | 'error');
   let bgColor = '#21262d';
   let textColor = '#8b949e';
   let label = status;
@@ -334,9 +299,6 @@ export default function MonitorDetailScreen() {
               // Get previous record for diff
               const prevRecord = filteredHistory[index + 1];
               const showDiff = record.status === 'changed' && prevRecord?.value && record.value;
-              
-              // Clean value - remove all whitespace/newlines (for prices like "35,\n99")
-              const cleanValue = (val: string) => val.replace(/\s+/g, '').trim();
               
               return (
                 <SwipeableRow key={record.id} onDelete={() => handleDeleteHistory(record.id)}>

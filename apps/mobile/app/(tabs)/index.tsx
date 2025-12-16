@@ -17,21 +17,7 @@ import {
     TextInput,
     TouchableOpacity,
 } from 'react-native';
-
-function timeAgo(dateParam: string | null | undefined): string {
-  if (!dateParam) return 'Never';
-  const date = new Date(dateParam.replace(' ', 'T'));
-  const now = new Date();
-  const seconds = Math.round((now.getTime() - date.getTime()) / 1000);
-  
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
+import { timeAgo, getStatusColor } from '@deltawatch/shared';
 
 // History sparkline component matching web UI
 function HistorySparkline({ history }: { history?: Array<{ status: string }> }) {
@@ -47,12 +33,7 @@ function HistorySparkline({ history }: { history?: Array<{ status: string }> }) 
         const historyIndex = 9 - i;
         const record = historyIndex < historyLength && history ? history[historyIndex] : null;
         
-        let color = '#21262d';
-        if (record) {
-          if (record.status === 'unchanged') color = '#22c55e';
-          else if (record.status === 'changed') color = '#eab308';
-          else if (record.status === 'error') color = '#ef4444';
-        }
+        const color = record ? getStatusColor(record.status as 'unchanged' | 'changed' | 'error') : '#21262d';
         
         return <RNView key={i} style={[styles.sparklineBar, { backgroundColor: color }]} />;
       })}

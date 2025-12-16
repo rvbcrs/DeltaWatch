@@ -4,12 +4,16 @@
     "private": true,
     "description": "DeltaWatch - Website Change Monitoring Platform",
     "scripts": {
+        "start": "concurrently \"pnpm --filter @deltawatch/web-server start\" \"pnpm --filter @deltawatch/web-client dev\"",
         "dev": "pnpm -r --parallel dev",
         "dev:web": "pnpm --filter @deltawatch/web-client dev",
         "dev:mobile": "pnpm --filter @deltawatch/mobile start",
         "build": "pnpm -r build",
         "build:shared": "pnpm --filter @deltawatch/shared build",
         "install:all": "pnpm install"
+    },
+    "devDependencies": {
+        "concurrently": "^8.2.0"
     },
     "engines": {
         "node": ">=20"

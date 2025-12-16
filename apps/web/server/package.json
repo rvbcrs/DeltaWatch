@@ -1,5 +1,5 @@
 {
-  "name": "server",
+  "name": "@deltawatch/web-server",
   "version": "1.0.0",
   "description": "",
   "main": "index.ts",

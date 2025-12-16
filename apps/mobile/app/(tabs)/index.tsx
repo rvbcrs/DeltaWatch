@@ -27,11 +27,10 @@ function HistorySparkline({ history }: { history?: Array<{ status: string }> }) 
   return (
     <RNView style={styles.sparkline}>
       {bars.map((_, i) => {
-        // History is sorted newest-first, but we want newest on the right
-        // So bar index 9 (rightmost) should show history[0] (newest)
-        // And bar index 0 (leftmost) should show history[9] (oldest) or empty
-        const historyIndex = 9 - i;
-        const record = historyIndex < historyLength && history ? history[historyIndex] : null;
+        // History is sorted newest-first, we want newest on the LEFT
+        // So bar index 0 (leftmost) should show history[0] (newest)
+        // And bar index 9 (rightmost) should show history[9] (oldest) or empty
+        const record = i < historyLength && history ? history[i] : null;
         
         const color = record ? getStatusColor(record.status as 'unchanged' | 'changed' | 'error') : '#21262d';
         

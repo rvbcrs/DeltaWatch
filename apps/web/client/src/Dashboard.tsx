@@ -318,11 +318,10 @@ const Dashboard = () => {
                     <div className="flex items-center gap-1 justify-start md:justify-end mb-1">
                         <div className="flex gap-[2px]">
                             {[...Array(20)].map((_, i) => {
-                                // History is sorted newest-first, but we want newest on the right
-                                // So bar index 19 (rightmost) should show history[0] (newest)
+                                // History is sorted newest-first, we want newest on the LEFT
+                                // So bar index 0 (leftmost) should show history[0] (newest)
                                 const historyLength = Math.min(monitor.history ? monitor.history.length : 0, 20);
-                                const historyIndex = 19 - i;
-                                const record = historyIndex < historyLength && monitor.history ? monitor.history[historyIndex] : null;
+                                const record = i < historyLength && monitor.history ? monitor.history[i] : null;
 
                                 let colorClass = 'bg-gray-800';
                                 if (record) {

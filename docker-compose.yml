@@ -7,7 +7,7 @@ services:
     container_name: deltawatch
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3005:3000"
     environment:
       - NODE_ENV=production
       - DATA_DIR=/app/apps/web/server/data

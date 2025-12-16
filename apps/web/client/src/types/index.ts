@@ -1,50 +1,40 @@
 // Shared type definitions for DeltaWatch
+// Re-export and extend types from the shared package
 
-export interface Monitor {
-  id: number;
-  user_id: number;
-  url: string;
-  selector: string;
+import { 
+  Monitor as SharedMonitor, 
+  HistoryRecord as SharedHistoryRecord,
+  User as SharedUser,
+  ApiResponse
+} from '@deltawatch/shared';
+
+// Re-export shared types
+export type { ApiResponse };
+
+// Web-specific extensions of shared types
+export interface Monitor extends SharedMonitor {
+  user_id?: number;
   selector_text?: string;
-  interval: string;
-  type: 'text' | 'visual';
-  name?: string;
-  active: boolean;
-  last_check?: string;
-  last_change?: string;
-  last_value?: string;
-  last_screenshot?: string;
   notify_config?: string;
   ai_prompt?: string;
   scenario_config?: string;
-  tags?: string;
   keywords?: string;
   ai_only_visual?: boolean;
-  created_at: string;
+  created_at?: string;
   history?: HistoryItem[];
-  unread_count?: number;
 }
 
-export interface HistoryItem {
-  id: number;
-  monitor_id: number;
-  status: 'unchanged' | 'changed' | 'error';
-  created_at: string;
-  value?: string;
-  screenshot_path?: string;
+export interface HistoryItem extends SharedHistoryRecord {
+  monitor_id?: number;
   prev_screenshot_path?: string;
   diff_screenshot_path?: string;
   ai_summary?: string;
-  http_status?: number;
 }
 
-export interface User {
-  id: number;
-  email: string;
-  role: 'admin' | 'user';
-  is_blocked: boolean;
-  email_verified: boolean;
-  created_at: string;
+export interface User extends SharedUser {
+  is_blocked?: boolean;
+  email_verified?: boolean;
+  created_at?: string;
 }
 
 export interface Settings {
@@ -80,11 +70,8 @@ export interface Stats {
   errorsToday: number;
 }
 
-export interface ApiResponse<T> {
-  message: string;
-  data?: T;
-  error?: string;
-}
+
+
 
 export interface AuthContextType {
   token: string | null;

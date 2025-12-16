@@ -6,36 +6,22 @@ import * as Diff from 'diff';
 import { useToast } from './contexts/ToastContext';
 import { useDialog } from './contexts/DialogContext';
 import { useAuth } from './contexts/AuthContext';
+import { type HistoryRecord as SharedHistoryRecord, type Monitor as SharedMonitor } from '@deltawatch/shared';
 
 interface Keyword {
     text: string;
     mode: 'appears' | 'disappears' | 'any';
 }
 
-interface HistoryRecord {
-    id: number;
-    status: 'changed' | 'unchanged' | 'error';
-    value?: string;
-    created_at: string;
-    screenshot_path?: string;
+// Extend shared types with web-specific fields
+interface HistoryRecord extends SharedHistoryRecord {
     prev_screenshot_path?: string;
     diff_screenshot_path?: string;
     ai_summary?: string;
-    http_status?: number;
 }
 
-interface Monitor {
-    id: number;
-    name?: string;
-    url: string;
-    selector: string;
-    type: 'text' | 'visual';
-    interval: string;
-    last_check?: string;
-    last_value?: string;
-    tags?: string;
+interface Monitor extends SharedMonitor {
     keywords?: string;
-    unread_count?: number;
     history: HistoryRecord[];
 }
 

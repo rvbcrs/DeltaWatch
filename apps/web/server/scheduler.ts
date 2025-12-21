@@ -7,6 +7,7 @@ import path from 'path';
 import * as Diff from 'diff';
 import { cleanValue } from '@deltawatch/shared';
 import { PNG } from 'pngjs';
+import pLimit from 'p-limit';
 import db from './db';
 import { sendNotification } from './notifications';
 import { summarizeChange, summarizeVisualChange, findSelector } from './ai';
@@ -61,8 +62,25 @@ const INTERVAL_MINUTES: Record<string, number> = {
 
 // Failure tracking constants
 const MAX_CONSECUTIVE_FAILURES = 5;  // After 5 failures, put monitor in cooldown
-const COOLDOWN_MINUTES = 30;         // Skip monitor for 30 minutes after max failures
-const OVERALL_CHECK_TIMEOUT = 60000; // 60 seconds max per monitor check
+const BASE_COOLDOWN_MINUTES = 60;    // Base cooldown: 60 minutes after max failures
+const MAX_COOLDOWN_MINUTES = 480;    // Max cooldown: 8 hours
+const OVERALL_CHECK_TIMEOUT = 45000; // 45 seconds max per monitor check (reduced from 60s)
+const CONCURRENT_CHECK_LIMIT = 2;    // Max 2 monitors checking at same time
+
+// Concurrency limiter for sequential processing
+const checkLimit = pLimit(CONCURRENT_CHECK_LIMIT);
+
+// Track scheduler health
+let lastSuccessfulCheck = Date.now();
+let schedulerErrors = 0;
+
+export function getSchedulerHealth() {
+    return {
+        lastSuccessfulCheck,
+        schedulerErrors,
+        healthy: (Date.now() - lastSuccessfulCheck) < 5 * 60 * 1000 // Healthy if checked in last 5 mins
+    };
+}
 
 /**
  * Retry wrapper with exponential backoff for network operations
@@ -117,13 +135,17 @@ async function checkMonitors(): Promise<void> {
             // Check if monitor is in cooldown due to consecutive failures
             const consecutiveFailures = (m as any).consecutive_failures || 0;
             if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && m.last_check) {
-                const cooldownEnd = new Date(new Date(m.last_check).getTime() + COOLDOWN_MINUTES * 60000);
+                // Exponential backoff: double cooldown for each failure above threshold
+                const failureMultiplier = Math.min(Math.pow(2, consecutiveFailures - MAX_CONSECUTIVE_FAILURES), MAX_COOLDOWN_MINUTES / BASE_COOLDOWN_MINUTES);
+                const actualCooldown = Math.min(BASE_COOLDOWN_MINUTES * failureMultiplier, MAX_COOLDOWN_MINUTES);
+                const cooldownEnd = new Date(new Date(m.last_check).getTime() + actualCooldown * 60000);
                 if (now < cooldownEnd) {
-                    console.log(`[${m.name || m.id}] Skipping - in cooldown (${consecutiveFailures} consecutive failures)`);
+                    const minsRemaining = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
+                    console.log(`[${m.name || m.id}] Skipping - in cooldown (${consecutiveFailures} failures, ${minsRemaining}m remaining)`);
                     return false;
                 }
                 // Cooldown expired, try again
-                console.log(`[${m.name || m.id}] Cooldown expired, retrying...`);
+                console.log(`[${m.name || m.id}] Cooldown expired after ${actualCooldown}m, retrying...`);
             }
             
             // Check if it's time for the next check
@@ -146,27 +168,44 @@ async function checkMonitors(): Promise<void> {
         try {
             pooledContext = await acquireBrowser();
             
-            for (const monitor of dueMonitors) {
-                // Wrap each check in an overall timeout to prevent indefinite blocking
-                try {
-                    await Promise.race([
-                        checkSingleMonitor(monitor, pooledContext.context),
-                        new Promise<void>((_, reject) => 
-                            setTimeout(() => reject(new Error('Overall check timeout exceeded')), OVERALL_CHECK_TIMEOUT)
-                        )
-                    ]);
-                } catch (timeoutErr: any) {
-                    console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
-                    // Increment failure count for timeout
-                    db.run("UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?", 
-                        [new Date().toISOString(), monitor.id]);
-                }
-            }
+            // Process monitors with concurrency limit to prevent event loop blocking
+            const checkPromises = dueMonitors.map(monitor => 
+                checkLimit(async () => {
+                    // Yield to event loop between checks
+                    await new Promise(resolve => setImmediate(resolve));
+                    
+                    // Wrap each check in an overall timeout to prevent indefinite blocking
+                    try {
+                        await Promise.race([
+                            checkSingleMonitor(monitor, pooledContext!.context),
+                            new Promise<void>((_, reject) => 
+                                setTimeout(() => reject(new Error('Overall check timeout exceeded')), OVERALL_CHECK_TIMEOUT)
+                            )
+                        ]);
+                        lastSuccessfulCheck = Date.now();
+                    } catch (timeoutErr: any) {
+                        console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
+                        schedulerErrors++;
+                        // Increment failure count for timeout
+                        db.run("UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?", 
+                            [new Date().toISOString(), monitor.id]);
+                    }
+                })
+            );
+            
+            // Wait for all checks to complete (still respecting concurrency limit)
+            await Promise.all(checkPromises);
+            
         } catch (e: any) {
             logError('scheduler', `Browser pool error: ${e.message}`, e.stack);
+            schedulerErrors++;
         } finally {
             if (pooledContext) {
-                await pooledContext.release();
+                try {
+                    await pooledContext.release();
+                } catch (releaseErr) {
+                    // Ignore release errors - browser may already be closed
+                }
             }
         }
     });
@@ -260,19 +299,36 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                 } catch (e2) {
                     console.log(`[${monitorName}] Element not found: ${monitor.selector}. Attempting Self-Healing...`);
 
+                    // Check browser/page health before attempting self-healing
                     try {
-                        const htmlSnapshot = await page.evaluate(() => {
-                            const clone = document.body.cloneNode(true) as HTMLElement;
-                            const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
-                            toRemove.forEach(el => el.remove());
-                            return clone.outerHTML;
-                        });
+                        if (page.isClosed()) {
+                            console.log(`[${monitorName}] Page closed, skipping self-healing`);
+                            throw new Error('Page closed during check');
+                        }
+                        
+                        const htmlSnapshot = await Promise.race([
+                            page.evaluate(() => {
+                                const clone = document.body.cloneNode(true) as HTMLElement;
+                                const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
+                                toRemove.forEach(el => el.remove());
+                                return clone.outerHTML;
+                            }),
+                            new Promise<string>((_, reject) => 
+                                setTimeout(() => reject(new Error('HTML snapshot timeout')), 10000)
+                            )
+                        ]);
 
                         const newSelector = await findSelector(htmlSnapshot, monitor.selector, monitor.last_value || '', monitor.ai_prompt || null);
 
                         if (newSelector) {
                             console.log(`[${monitorName}] 🩹 AI Healed Selector: "${newSelector}"`);
 
+                            // Check page still alive
+                            if (page.isClosed()) {
+                                console.log(`[${monitorName}] Page closed during healing, aborting`);
+                                throw new Error('Page closed during healing');
+                            }
+                            
                             const verified = await page.$(newSelector);
                             if (verified) {
                                 console.log(`[${monitorName}] Verified new selector works. Updating DB...`);
@@ -292,8 +348,13 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                                 console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
                             }
                         }
-                    } catch (healErr) {
-                        console.error(`[${monitorName}] Self-Healing Failed:`, healErr);
+                    } catch (healErr: any) {
+                        // Check if it's a browser/page closed error - don't log as full error
+                        if (healErr.message?.includes('closed') || healErr.message?.includes('Target')) {
+                            console.log(`[${monitorName}] Self-Healing skipped: browser/page closed`);
+                        } else {
+                            console.error(`[${monitorName}] Self-Healing Failed:`, healErr.message);
+                        }
                     }
                 }
             }

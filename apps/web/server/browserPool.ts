@@ -26,9 +26,11 @@ interface PooledBrowser {
 const MAX_BROWSERS = 3;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes - recycle browsers
+const MAX_CONSECUTIVE_ERRORS = 3; // Force reset pool after 3 consecutive errors
 
 let browserPool: PooledBrowser[] = [];
 let isShuttingDown = false;
+let consecutiveErrors = 0;
 
 /**
  * Get launch options including proxy settings
@@ -79,7 +81,22 @@ async function createBrowser(): Promise<PooledBrowser> {
     });
     
     logInfo('browser', `Created new browser instance (pool size: ${browserPool.length + 1})`);
+    consecutiveErrors = 0; // Reset error counter on successful creation
     return pooledBrowser;
+}
+
+/**
+ * Check if a browser instance is healthy
+ */
+async function isBrowserHealthy(pb: PooledBrowser): Promise<boolean> {
+    try {
+        // Quick health check - try to get contexts
+        const contexts = pb.browser.contexts();
+        // If browser is connected and has no errors, it's healthy
+        return pb.browser.isConnected();
+    } catch (e) {
+        return false;
+    }
 }
 
 /**
@@ -95,9 +112,35 @@ export async function acquireBrowser(): Promise<{ context: BrowserContext; relea
     
     // If no available browser, create a new one if we have room
     if (!pooledBrowser) {
+        // First, try to clean up unhealthy browsers
+        for (let i = browserPool.length - 1; i >= 0; i--) {
+            const pb = browserPool[i];
+            if (!pb.inUse && !(await isBrowserHealthy(pb))) {
+                try {
+                    await pb.browser.close();
+                } catch (e) {
+                    // Ignore close errors
+                }
+                browserPool.splice(i, 1);
+                logWarn('browser', `Removed unhealthy browser, pool size: ${browserPool.length}`);
+            }
+        }
+        
         if (browserPool.length < MAX_BROWSERS) {
-            pooledBrowser = await createBrowser();
-            browserPool.push(pooledBrowser);
+            try {
+                pooledBrowser = await createBrowser();
+                browserPool.push(pooledBrowser);
+            } catch (createErr: any) {
+                consecutiveErrors++;
+                logError('browser', `Failed to create browser: ${createErr.message}`);
+                
+                // If too many consecutive errors, force reset the pool
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    logWarn('browser', `Too many consecutive errors (${consecutiveErrors}), forcing pool reset`);
+                    await forceResetPool();
+                }
+                throw createErr;
+            }
         } else {
             // Wait for a browser to become available
             logWarn('browser', 'All browsers in use, waiting for availability...');
@@ -183,12 +226,35 @@ export async function shutdownPool(): Promise<void> {
 /**
  * Get pool statistics
  */
-export function getPoolStats(): { total: number; inUse: number; available: number } {
+export function getPoolStats(): { total: number; inUse: number; available: number; consecutiveErrors: number; healthy: boolean } {
     return {
         total: browserPool.length,
         inUse: browserPool.filter(pb => pb.inUse).length,
-        available: browserPool.filter(pb => !pb.inUse).length
+        available: browserPool.filter(pb => !pb.inUse).length,
+        consecutiveErrors,
+        healthy: consecutiveErrors < MAX_CONSECUTIVE_ERRORS && !isShuttingDown
     };
+}
+
+/**
+ * Force reset the entire browser pool (emergency recovery)
+ */
+export async function forceResetPool(): Promise<void> {
+    logWarn('browser', 'Force resetting browser pool...');
+    
+    // Force close all browsers without waiting
+    for (const pb of browserPool) {
+        try {
+            // Don't wait for graceful close
+            pb.browser.close().catch(() => {});
+        } catch (e) {
+            // Ignore errors
+        }
+    }
+    
+    browserPool = [];
+    consecutiveErrors = 0;
+    logInfo('browser', 'Browser pool force reset complete');
 }
 
 // Start cleanup interval

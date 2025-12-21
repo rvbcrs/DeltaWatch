@@ -150,6 +150,65 @@ app.get('/api/health', async (req: Request, res: Response) => {
     res.status(allOk ? 200 : 503).json(checks);
 });
 
+// Deep Health Check - includes scheduler and browser pool health
+// Use this endpoint for Docker/Kubernetes liveness probes
+app.get('/api/health/deep', async (req: Request, res: Response) => {
+    const { getPoolStats, forceResetPool } = await import('./browserPool');
+    const { getSchedulerHealth } = await import('./scheduler');
+    
+    const poolStats = getPoolStats();
+    const schedulerHealth = getSchedulerHealth();
+    
+    const checks = {
+        timestamp: new Date().toISOString(),
+        server: 'ok',
+        database: 'unknown' as string,
+        scheduler: {
+            healthy: schedulerHealth.healthy,
+            lastSuccessfulCheck: new Date(schedulerHealth.lastSuccessfulCheck).toISOString(),
+            errors: schedulerHealth.schedulerErrors
+        },
+        browserPool: {
+            ...poolStats,
+            status: poolStats.healthy ? 'ok' : 'degraded'
+        }
+    };
+
+    // Check database connectivity
+    try {
+        await new Promise<void>((resolve, reject) => {
+            db.get('SELECT 1', (err: Error | null) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+        checks.database = 'ok';
+    } catch (e: any) {
+        checks.database = 'error';
+    }
+
+    // Determine overall health
+    const isHealthy = 
+        checks.database === 'ok' && 
+        schedulerHealth.healthy && 
+        poolStats.healthy;
+    
+    // If browser pool is unhealthy, try to recover
+    if (!poolStats.healthy) {
+        logWarn('api', 'Health check detected unhealthy browser pool, attempting recovery...');
+        try {
+            await forceResetPool();
+        } catch (e) {
+            // Recovery failed, but we'll report the status
+        }
+    }
+
+    res.status(isHealthy ? 200 : 503).json({
+        status: isHealthy ? 'healthy' : 'unhealthy',
+        ...checks
+    });
+});
+
 // AI Analyze Page endpoint (for browser extension and Editor auto-detect)
 app.post('/api/ai/analyze-page', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
     const { url, html, prompt } = req.body;

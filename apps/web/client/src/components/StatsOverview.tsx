@@ -93,12 +93,16 @@ const StatsOverview = forwardRef<StatsOverviewRef, StatsOverviewProps>(function 
                     console.log('Filter clicked: active');
                     onFilterClick?.('active');
                 }}
-                className={`bg-[#161b22] p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group cursor-pointer select-none transition-all ${
-                    activeFilter === 'active' ? 'border-blue-500 ring-1 ring-blue-500' : 'border-gray-800 hover:border-gray-600'
+                className={`p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group cursor-pointer select-none transition-all ${
+                    activeFilter === 'active' 
+                        ? 'bg-blue-500/20 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.3)]' 
+                        : 'bg-[#161b22] border-gray-800 hover:border-gray-600 hover:bg-[#1c2128]'
                 }`}
             >
                 <div className="flex justify-between items-start z-10 relative pointer-events-none">
-                    <div className="text-gray-400 text-xs uppercase font-bold tracking-wider">{t('stats.active')}</div>
+                    <div className={`text-xs uppercase font-bold tracking-wider ${activeFilter === 'active' ? 'text-white' : 'text-gray-400'}`}>
+                        {activeFilter === 'active' ? '✓ ' + t('dashboard.filter_active') : t('stats.active')}
+                    </div>
                     <Activity size={16} className="text-blue-500 opacity-75" />
                 </div>
                 <div className="flex items-end gap-2 z-10 relative pointer-events-none">
@@ -114,12 +118,16 @@ const StatsOverview = forwardRef<StatsOverviewRef, StatsOverviewProps>(function 
                     console.log('Filter clicked: all');
                     onFilterClick?.('all');
                 }}
-                className={`bg-[#161b22] p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group cursor-pointer select-none transition-all ${
-                    activeFilter === 'all' ? 'border-purple-500 ring-1 ring-purple-500' : 'border-gray-800 hover:border-gray-600'
+                className={`p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group cursor-pointer select-none transition-all ${
+                    activeFilter === 'all' 
+                        ? 'bg-purple-500/20 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.3)]' 
+                        : 'bg-[#161b22] border-gray-800 hover:border-gray-600 hover:bg-[#1c2128]'
                 }`}
             >
                 <div className="flex justify-between items-start z-10 relative pointer-events-none">
-                    <div className="text-gray-400 text-xs uppercase font-bold tracking-wider">{t('stats.checks_24h')}</div>
+                    <div className={`text-xs uppercase font-bold tracking-wider ${activeFilter === 'all' ? 'text-white' : 'text-gray-400'}`}>
+                        {activeFilter === 'all' ? '✓ ' + t('dashboard.showing_all') : t('stats.checks_24h')}
+                    </div>
                     <TrendingUp size={16} className="text-purple-500 opacity-75" />
                 </div>
                 <div className="flex items-end gap-2 z-10 relative pointer-events-none">
@@ -149,19 +157,24 @@ const StatsOverview = forwardRef<StatsOverviewRef, StatsOverviewProps>(function 
                     onFilterClick?.('error');
                 }}
                 className={`p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group transition-all duration-300 cursor-pointer select-none ${
-                stats.errors_24h > 0 
-                ? "bg-[#161b22] border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.2)]" 
-                : "bg-[#161b22] border-gray-800 hover:border-gray-600"
-            } ${activeFilter === 'error' ? 'ring-1 ring-red-500' : ''}`}>
+                    activeFilter === 'error'
+                        ? 'bg-red-500/20 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.4)]'
+                        : stats.errors_24h > 0 
+                            ? "bg-[#161b22] border-red-500/50 hover:bg-[#1c2128]" 
+                            : "bg-[#161b22] border-gray-800 hover:border-gray-600 hover:bg-[#1c2128]"
+                }`}
+            >
                 <div className="flex justify-between items-start z-10 relative pointer-events-none">
-                    <div className="text-gray-400 text-xs uppercase font-bold tracking-wider">{t('stats.errors_24h')}</div>
+                     <div className={`text-xs uppercase font-bold tracking-wider ${activeFilter === 'error' ? 'text-white' : 'text-gray-400'}`}>
+                        {activeFilter === 'error' ? '✓ ' + t('dashboard.filter_errors') : t('stats.errors_24h')}
+                    </div>
                     <AlertTriangle size={16} className={stats.errors_24h === 0 ? "text-gray-600" : "text-red-500 opacity-75"} />
                 </div>
                 <div className="flex items-end gap-2 z-10 relative pointer-events-none">
                     <div className={`text-2xl font-bold ${stats.errors_24h === 0 ? "text-gray-400" : "text-red-400"}`}>{stats.errors_24h}</div>
                     <div className="text-xs text-gray-500 mb-1">Global Errors</div>
                 </div>
-                 <div className={`absolute -right-4 -bottom-4 w-24 h-24 rounded-full blur-xl transition-colors ${stats.errors_24h === 0 ? "bg-gray-500/5" : "bg-red-500/10 group-hover:bg-red-500/20"}`}></div>
+                 <div className={`absolute -right-4 -bottom-4 w-24 h-24 rounded-full blur-xl transition-colors pointer-events-none ${stats.errors_24h === 0 ? "bg-gray-500/5" : "bg-red-500/10 group-hover:bg-red-500/20"}`}></div>
             </div>
         </div>
     );

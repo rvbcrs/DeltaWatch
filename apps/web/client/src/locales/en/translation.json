@@ -101,7 +101,12 @@
             "duplicate_success": "Monitor duplicated successfully",
             "duplicate_failed": "Failed to duplicate monitor",
             "export_success": "Monitor exported",
-            "check_failed": "Check failed: {{error}}"
+            "check_failed": "Check failed: {{error}}",
+            "filter_active": "Filter Active",
+            "showing_all": "Showing All",
+            "filter_errors": "Showing Errors",
+            "no_monitors_filter": "No monitors found matching filter: {{filter}}",
+            "try_clearing_filter": "Try clearing the filter to see all monitors."
         }
     },
     "sidebar": {

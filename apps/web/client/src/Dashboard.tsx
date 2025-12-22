@@ -231,20 +231,17 @@ const Dashboard = () => {
       } else if (statusFilter === 'inactive') {
           if (m.active) return false;
       } else if (statusFilter === 'error') {
-          // Check if monitor has any visible errors in history history
-          // OR if the last check failed (http_status >= 400)
           const hasError = m.history?.some(h => h.status === 'error' || (h.http_status !== null && h.http_status >= 400));
           if (!hasError) return false;
       }
 
-      // Filter by tag
+      // Filter by tag and search...
       if (selectedTag) {
           try { 
               const tags = JSON.parse(m.tags || '[]') as string[];
               if (!tags.includes(selectedTag)) return false;
           } catch { return false; }
       }
-      // Filter by search query
       if (searchQuery) {
           const query = searchQuery.toLowerCase();
           const nameMatch = (m.name || '').toLowerCase().includes(query);
@@ -253,6 +250,8 @@ const Dashboard = () => {
       }
       return true;
   });
+
+  console.log(`[Dashboard] Render. Filter: ${statusFilter}, Monitors: ${monitors.length}, Filtered: ${filteredMonitors.length}`);
 
     const renderMonitorCard = (monitor: Monitor) => (
         <Link 
@@ -479,7 +478,10 @@ const Dashboard = () => {
         <div className={`transition-all duration-300 ease-in-out overflow-hidden ${showStats ? 'max-h-[500px] opacity-100 mb-6' : 'max-h-0 opacity-0 mb-0'}`}>
             <StatsOverview 
                 ref={statsRef} 
-                onFilterClick={(filter) => setStatusFilter(filter === statusFilter ? 'all' : filter)}
+                onFilterClick={(filter) => {
+                    console.log(`[Dashboard] onFilterClick received: ${filter}, current: ${statusFilter}`);
+                    setStatusFilter(filter === statusFilter ? 'all' : filter);
+                }}
                 activeFilter={statusFilter}
             />
         </div>

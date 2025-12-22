@@ -113,29 +113,17 @@ const StatsOverview = forwardRef<StatsOverviewRef, StatsOverviewProps>(function 
                 <div className="absolute -right-4 -bottom-4 bg-blue-500/10 w-24 h-24 rounded-full blur-xl group-hover:bg-blue-500/20 transition-colors pointer-events-none"></div>
             </div>
 
-            {/* 24h Checks - Click to show Inactive/All */}
-            <div 
-                onClick={() => {
-                    console.log('Filter clicked: all');
-                    onFilterClick?.('all');
-                }}
-                className={`p-4 rounded-lg border flex flex-col justify-between h-24 relative overflow-hidden group cursor-pointer select-none transition-all ${
-                    activeFilter === 'all' 
-                        ? 'bg-purple-500/20 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.3)]' 
-                        : 'bg-[#161b22] border-gray-800 hover:border-gray-600 hover:bg-[#1c2128]'
-                }`}
-            >
-                <div className="flex justify-between items-start z-10 relative pointer-events-none">
-                    <div className={`text-xs uppercase font-bold tracking-wider ${activeFilter === 'all' ? 'text-white' : 'text-gray-400'}`}>
-                        {activeFilter === 'all' ? '✓ ' + t('dashboard.showing_all') : t('stats.checks_24h')}
-                    </div>
+            {/* 24h Checks */}
+            <div className="bg-[#161b22] p-4 rounded-lg border border-gray-800 flex flex-col justify-between h-24 relative overflow-hidden group">
+                <div className="flex justify-between items-start z-10 relative">
+                    <div className="text-gray-400 text-xs uppercase font-bold tracking-wider">{t('stats.checks_24h')}</div>
                     <TrendingUp size={16} className="text-purple-500 opacity-75" />
                 </div>
-                <div className="flex items-end gap-2 z-10 relative pointer-events-none">
+                <div className="flex items-end gap-2 z-10 relative">
                     <div className="text-2xl font-bold text-white">{stats.checks_24h.toLocaleString()}</div>
                     <div className="text-xs text-gray-500 mb-1">Checks</div>
                 </div>
-                <div className="absolute -right-4 -bottom-4 bg-purple-500/10 w-24 h-24 rounded-full blur-xl group-hover:bg-purple-500/20 transition-colors pointer-events-none"></div>
+                <div className="absolute -right-4 -bottom-4 bg-purple-500/10 w-24 h-24 rounded-full blur-xl group-hover:bg-purple-500/20 transition-colors"></div>
             </div>
 
             {/* Success Rate */}

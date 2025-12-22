@@ -101,13 +101,13 @@
             "duplicate_success": "Monitor succesvol gedupliceerd",
             "duplicate_failed": "Kon monitor niet dupliceren",
             "export_success": "Monitor geëxporteerd",
-            "check_failed": "Check mislukt: {{error}}",
-            "filter_active": "Filter Actief",
-            "showing_all": "Toon Alles",
-            "filter_errors": "Toon Fouten",
-            "no_monitors_filter": "Geen monitors gevonden met filter: {{filter}}",
-            "try_clearing_filter": "Probeer het filter te wissen om alle monitors te zien."
-        }
+            "check_failed": "Check mislukt: {{error}}"
+        },
+        "filter_active": "Filter Actief",
+        "showing_all": "Toon Alles",
+        "filter_errors": "Toon Fouten",
+        "no_monitors_filter": "Geen monitors gevonden met filter: {{filter}}",
+        "try_clearing_filter": "Probeer het filter te wissen om alle monitors te zien."
     },
     "sidebar": {
         "dashboard": "Dashboard",

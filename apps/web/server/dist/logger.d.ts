@@ -1,5 +1,5 @@
 type LogLevel = 'error' | 'warn' | 'info';
-type LogSource = 'scheduler' | 'api' | 'browser' | 'auth' | 'notification';
+type LogSource = 'scheduler' | 'api' | 'browser' | 'auth' | 'notification' | 'watchdog';
 interface LogEntry {
     id: number;
     level: LogLevel;

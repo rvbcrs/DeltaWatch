@@ -17,5 +17,11 @@ export declare function getPoolStats(): {
     total: number;
     inUse: number;
     available: number;
+    consecutiveErrors: number;
+    healthy: boolean;
 };
+/**
+ * Force reset the entire browser pool (emergency recovery)
+ */
+export declare function forceResetPool(): Promise<void>;
 //# sourceMappingURL=browserPool.d.ts.map

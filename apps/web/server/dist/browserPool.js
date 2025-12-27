@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.acquireBrowser = acquireBrowser;
 exports.shutdownPool = shutdownPool;
 exports.getPoolStats = getPoolStats;
+exports.forceResetPool = forceResetPool;
 const playwright_extra_1 = require("playwright-extra");
 const puppeteer_extra_plugin_stealth_1 = __importDefault(require("puppeteer-extra-plugin-stealth"));
 const logger_1 = require("./logger");
@@ -14,14 +15,28 @@ playwright_extra_1.chromium.use((0, puppeteer_extra_plugin_stealth_1.default)())
 const MAX_BROWSERS = 3;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes - recycle browsers
+const MAX_CONSECUTIVE_ERRORS = 3; // Force reset pool after 3 consecutive errors
 let browserPool = [];
 let isShuttingDown = false;
+let consecutiveErrors = 0;
 /**
  * Get launch options including proxy settings
  */
 async function getLaunchOptions() {
     const settings = await new Promise((resolve) => db_1.default.get("SELECT * FROM settings WHERE id = 1", (err, row) => resolve(row || {})));
-    const launchOptions = { headless: true };
+    const launchOptions = {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--enable-unsafe-swiftshader' // Fix for WebGL warning (crbug.com/242999)
+        ]
+    };
     if (settings.proxy_enabled && settings.proxy_server) {
         launchOptions.proxy = { server: settings.proxy_server };
         if (settings.proxy_auth) {
@@ -46,15 +61,36 @@ async function createBrowser() {
         createdAt: Date.now()
     };
     // Handle unexpected browser close
-    browser.on('disconnected', () => {
+    browser.on('disconnected', async () => {
         const index = browserPool.findIndex(pb => pb.browser === browser);
         if (index !== -1) {
             browserPool.splice(index, 1);
-            (0, logger_1.logWarn)('browser', 'Browser instance disconnected unexpectedly, removed from pool');
+            consecutiveErrors++;
+            (0, logger_1.logWarn)('browser', `Browser instance disconnected unexpectedly, removed from pool (errors: ${consecutiveErrors})`);
+            // Auto-reset pool if too many disconnects
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                (0, logger_1.logWarn)('browser', `Too many browser disconnects (${consecutiveErrors}), forcing pool reset`);
+                await forceResetPool();
+            }
         }
     });
     (0, logger_1.logInfo)('browser', `Created new browser instance (pool size: ${browserPool.length + 1})`);
+    consecutiveErrors = 0; // Reset error counter on successful creation
     return pooledBrowser;
+}
+/**
+ * Check if a browser instance is healthy
+ */
+async function isBrowserHealthy(pb) {
+    try {
+        // Quick health check - try to get contexts
+        const contexts = pb.browser.contexts();
+        // If browser is connected and has no errors, it's healthy
+        return pb.browser.isConnected();
+    }
+    catch (e) {
+        return false;
+    }
 }
 /**
  * Acquire a browser context from the pool
@@ -67,9 +103,35 @@ async function acquireBrowser() {
     let pooledBrowser = browserPool.find(pb => !pb.inUse && (Date.now() - pb.createdAt) < MAX_AGE_MS);
     // If no available browser, create a new one if we have room
     if (!pooledBrowser) {
+        // First, try to clean up unhealthy browsers
+        for (let i = browserPool.length - 1; i >= 0; i--) {
+            const pb = browserPool[i];
+            if (!pb.inUse && !(await isBrowserHealthy(pb))) {
+                try {
+                    await pb.browser.close();
+                }
+                catch (e) {
+                    // Ignore close errors
+                }
+                browserPool.splice(i, 1);
+                (0, logger_1.logWarn)('browser', `Removed unhealthy browser, pool size: ${browserPool.length}`);
+            }
+        }
         if (browserPool.length < MAX_BROWSERS) {
-            pooledBrowser = await createBrowser();
-            browserPool.push(pooledBrowser);
+            try {
+                pooledBrowser = await createBrowser();
+                browserPool.push(pooledBrowser);
+            }
+            catch (createErr) {
+                consecutiveErrors++;
+                (0, logger_1.logError)('browser', `Failed to create browser: ${createErr.message}`);
+                // If too many consecutive errors, force reset the pool
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    (0, logger_1.logWarn)('browser', `Too many consecutive errors (${consecutiveErrors}), forcing pool reset`);
+                    await forceResetPool();
+                }
+                throw createErr;
+            }
         }
         else {
             // Wait for a browser to become available
@@ -150,8 +212,29 @@ function getPoolStats() {
     return {
         total: browserPool.length,
         inUse: browserPool.filter(pb => pb.inUse).length,
-        available: browserPool.filter(pb => !pb.inUse).length
+        available: browserPool.filter(pb => !pb.inUse).length,
+        consecutiveErrors,
+        healthy: consecutiveErrors < MAX_CONSECUTIVE_ERRORS && !isShuttingDown
     };
+}
+/**
+ * Force reset the entire browser pool (emergency recovery)
+ */
+async function forceResetPool() {
+    (0, logger_1.logWarn)('browser', 'Force resetting browser pool...');
+    // Force close all browsers without waiting
+    for (const pb of browserPool) {
+        try {
+            // Don't wait for graceful close
+            pb.browser.close().catch(() => { });
+        }
+        catch (e) {
+            // Ignore errors
+        }
+    }
+    browserPool = [];
+    consecutiveErrors = 0;
+    (0, logger_1.logInfo)('browser', 'Browser pool force reset complete');
 }
 // Start cleanup interval
 setInterval(cleanupIdleBrowsers, 60000);

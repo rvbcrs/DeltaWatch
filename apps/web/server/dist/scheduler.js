@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getSchedulerHealth = getSchedulerHealth;
 exports.startScheduler = startScheduler;
 exports.checkSingleMonitor = checkSingleMonitor;
 exports.previewScenario = previewScenario;
@@ -45,13 +46,97 @@ const playwright_extra_1 = require("playwright-extra");
 const puppeteer_extra_plugin_stealth_1 = __importDefault(require("puppeteer-extra-plugin-stealth"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
-const pngjs_1 = require("pngjs");
 const Diff = __importStar(require("diff"));
+const shared_1 = require("@deltawatch/shared");
+const pngjs_1 = require("pngjs");
+const p_limit_1 = __importDefault(require("p-limit"));
 const db_1 = __importDefault(require("./db"));
 const notifications_1 = require("./notifications");
 const ai_1 = require("./ai");
 const logger_1 = require("./logger");
+// Backend translations for email notifications
+const translations = {
+    en: {
+        action_required: '⚠️ Action Required',
+        selector_broken: 'The selector appears broken. AI has suggested a fix',
+        review_approve: 'Review & Approve',
+        approve_in_dashboard: 'Please approve this change in the dashboard',
+        change_detected: 'Change detected for',
+        detection: 'Detection',
+        text_changes: 'Text Changes',
+        ai_summary: '🤖 AI Summary',
+        sent_by: 'Sent by DeltaWatch',
+        keyword_alert: '🔑 Keyword Alert',
+        keyword_appeared: 'appeared',
+        keyword_disappeared: 'disappeared',
+        monitor: 'Monitor',
+        url: 'URL',
+        downtime_alert: '🔴 Downtime Alert',
+        http_status: 'HTTP Status',
+        auto_recovery: '🔄 DeltaWatch Auto-Recovery',
+        auto_recovery_msg: 'monitors exceeded the cooldown threshold. The system has automatically reset all failure counters to resume monitoring.',
+        watchdog_sent_by: 'Sent by DeltaWatch Watchdog'
+    },
+    nl: {
+        action_required: '⚠️ Actie Vereist',
+        selector_broken: 'De selector lijkt kapot. AI heeft een fix voorgesteld',
+        review_approve: 'Bekijk & Keur goed',
+        approve_in_dashboard: 'Keur deze wijziging goed in het dashboard',
+        change_detected: 'Wijziging gedetecteerd voor',
+        detection: 'Detectie',
+        text_changes: 'Tekst Wijzigingen',
+        ai_summary: '🤖 AI Samenvatting',
+        sent_by: 'Verzonden door DeltaWatch',
+        keyword_alert: '🔑 Trefwoord Waarschuwing',
+        keyword_appeared: 'verscheen',
+        keyword_disappeared: 'verdween',
+        monitor: 'Monitor',
+        url: 'URL',
+        downtime_alert: '🔴 Uitval Waarschuwing',
+        http_status: 'HTTP Status',
+        auto_recovery: '🔄 DeltaWatch Auto-Herstel',
+        auto_recovery_msg: 'monitors overschreden de cooldown-drempel. Het systeem heeft automatisch alle failure counters gereset om monitoring te hervatten.',
+        watchdog_sent_by: 'Verzonden door DeltaWatch Watchdog'
+    }
+};
+// Helper to get translation
+function t(key, lang = 'en') {
+    return translations[lang]?.[key] || translations['en'][key] || key;
+}
+// Helper to get language setting from database
+async function getLanguage() {
+    return new Promise((resolve) => {
+        db_1.default.get("SELECT language FROM settings WHERE id = 1", [], (err, row) => {
+            resolve(row?.language || 'en');
+        });
+    });
+}
 playwright_extra_1.chromium.use((0, puppeteer_extra_plugin_stealth_1.default)());
+// Helper to resolve public folder path (works in both dev and Docker/production)
+const getPublicPath = (...subpaths) => {
+    const directPath = path_1.default.join(__dirname, 'public', ...subpaths);
+    if (fs_1.default.existsSync(directPath))
+        return directPath;
+    return path_1.default.join(__dirname, '..', 'public', ...subpaths);
+};
+// Helper to detect browser/infrastructure errors that should NOT count as monitor failures
+const isBrowserError = (errorMessage) => {
+    const browserErrorPatterns = [
+        'Target page, context or browser has been closed',
+        'Browser has been closed',
+        'context has been closed',
+        'page has been closed',
+        'net::ERR_ABORTED',
+        'frame was detached',
+        'Navigation failed because page was closed',
+        'Protocol error',
+        'Target closed',
+        'Session closed',
+        'Connection refused',
+        'Browser disconnected'
+    ];
+    return browserErrorPatterns.some(pattern => errorMessage.includes(pattern));
+};
 const INTERVAL_MINUTES = {
     '1m': 1,
     '5m': 5,
@@ -61,6 +146,24 @@ const INTERVAL_MINUTES = {
     '24h': 1440,
     '1w': 10080
 };
+// Failure tracking constants
+const MAX_CONSECUTIVE_FAILURES = 5; // After 5 failures, put monitor in cooldown
+const BASE_COOLDOWN_MINUTES = 60; // Base cooldown: 60 minutes after max failures
+const MAX_COOLDOWN_MINUTES = 480; // Max cooldown: 8 hours
+const OVERALL_CHECK_TIMEOUT = 45000; // 45 seconds max per monitor check (reduced from 60s)
+const CONCURRENT_CHECK_LIMIT = 2; // Max 2 monitors checking at same time
+// Concurrency limiter for sequential processing
+const checkLimit = (0, p_limit_1.default)(CONCURRENT_CHECK_LIMIT);
+// Track scheduler health
+let lastSuccessfulCheck = Date.now();
+let schedulerErrors = 0;
+function getSchedulerHealth() {
+    return {
+        lastSuccessfulCheck,
+        schedulerErrors,
+        healthy: (Date.now() - lastSuccessfulCheck) < 5 * 60 * 1000 // Healthy if checked in last 5 mins
+    };
+}
 /**
  * Retry wrapper with exponential backoff for network operations
  */
@@ -97,6 +200,22 @@ async function checkMonitors() {
         }
         const now = new Date();
         const dueMonitors = monitors.filter(m => {
+            // Check if monitor is in cooldown due to consecutive failures
+            const consecutiveFailures = m.consecutive_failures || 0;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && m.last_check) {
+                // Exponential backoff: double cooldown for each failure above threshold
+                const failureMultiplier = Math.min(Math.pow(2, consecutiveFailures - MAX_CONSECUTIVE_FAILURES), MAX_COOLDOWN_MINUTES / BASE_COOLDOWN_MINUTES);
+                const actualCooldown = Math.min(BASE_COOLDOWN_MINUTES * failureMultiplier, MAX_COOLDOWN_MINUTES);
+                const cooldownEnd = new Date(new Date(m.last_check).getTime() + actualCooldown * 60000);
+                if (now < cooldownEnd) {
+                    const minsRemaining = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
+                    console.log(`[${m.name || m.id}] Skipping - in cooldown (${consecutiveFailures} failures, ${minsRemaining}m remaining)`);
+                    return false;
+                }
+                // Cooldown expired, try again
+                console.log(`[${m.name || m.id}] Cooldown expired after ${actualCooldown}m, retrying...`);
+            }
+            // Check if it's time for the next check
             if (!m.last_check)
                 return true;
             const lastCheck = new Date(m.last_check);
@@ -112,16 +231,46 @@ async function checkMonitors() {
         let pooledContext = null;
         try {
             pooledContext = await acquireBrowser();
-            for (const monitor of dueMonitors) {
-                await checkSingleMonitor(monitor, pooledContext.context);
-            }
+            // Process monitors with concurrency limit to prevent event loop blocking
+            const checkPromises = dueMonitors.map(monitor => checkLimit(async () => {
+                // Yield to event loop between checks
+                await new Promise(resolve => setImmediate(resolve));
+                // Wrap each check in an overall timeout to prevent indefinite blocking
+                try {
+                    await Promise.race([
+                        checkSingleMonitor(monitor, pooledContext.context),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Overall check timeout exceeded')), OVERALL_CHECK_TIMEOUT))
+                    ]);
+                    lastSuccessfulCheck = Date.now();
+                }
+                catch (timeoutErr) {
+                    console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
+                    schedulerErrors++;
+                    // Only increment failure count for non-browser errors
+                    if (!isBrowserError(timeoutErr.message)) {
+                        db_1.default.run("UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?", [new Date().toISOString(), monitor.id]);
+                    }
+                    else {
+                        console.log(`[${monitor.name || monitor.id}] Browser error - not counting as failure`);
+                        db_1.default.run("UPDATE monitors SET last_check = ? WHERE id = ?", [new Date().toISOString(), monitor.id]);
+                    }
+                }
+            }));
+            // Wait for all checks to complete (still respecting concurrency limit)
+            await Promise.all(checkPromises);
         }
         catch (e) {
             (0, logger_1.logError)('scheduler', `Browser pool error: ${e.message}`, e.stack);
+            schedulerErrors++;
         }
         finally {
             if (pooledContext) {
-                await pooledContext.release();
+                try {
+                    await pooledContext.release();
+                }
+                catch (releaseErr) {
+                    // Ignore release errors - browser may already be closed
+                }
             }
         }
     });
@@ -129,28 +278,21 @@ async function checkMonitors() {
 async function checkSingleMonitor(monitor, context = null) {
     const monitorName = monitor.name || `Monitor ${monitor.id}`;
     console.log(`[${monitorName}] Checking: ${monitor.url}`);
-    let internalBrowser = null;
+    let pooledContext = null;
+    let page;
+    // Acquire browser from pool if not provided
     if (!context) {
         try {
-            const settings = await new Promise((resolve) => db_1.default.get("SELECT * FROM settings WHERE id = 1", (err, row) => resolve(row || {})));
-            const launchOptions = { headless: true };
-            if (settings.proxy_enabled && settings.proxy_server) {
-                launchOptions.proxy = { server: settings.proxy_server };
-                if (settings.proxy_auth) {
-                    const [username, password] = settings.proxy_auth.split(':');
-                    launchOptions.proxy.username = username;
-                    launchOptions.proxy.password = password;
-                }
-            }
-            internalBrowser = await playwright_extra_1.chromium.launch(launchOptions);
-            context = await internalBrowser.newContext();
+            const { acquireBrowser } = await Promise.resolve().then(() => __importStar(require('./browserPool')));
+            pooledContext = await acquireBrowser();
+            context = pooledContext.context;
         }
         catch (e) {
-            console.error("Browser Launch Error:", e);
+            console.error("Browser Pool Error:", e.message);
+            db_1.default.run(`INSERT INTO check_history (monitor_id, status, response_time, created_at, value) VALUES (?, ?, ?, ?, ?)`, [monitor.id, 'error', 0, new Date().toISOString(), `Browser Error: ${e.message}`]);
             return;
         }
     }
-    let page;
     let httpStatus = null;
     let screenshotPath = '';
     try {
@@ -158,25 +300,25 @@ async function checkSingleMonitor(monitor, context = null) {
         let response;
         response = await withRetry(async () => {
             try {
-                const resp = await page.goto(monitor.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                const resp = await page.goto(monitor.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
                 await page.waitForTimeout(2000);
                 try {
-                    await page.waitForLoadState('networkidle', { timeout: 10000 });
+                    await page.waitForLoadState('networkidle', { timeout: 5000 });
                 }
                 catch (e) {
-                    console.log(`[${monitorName}] networkidle timeout, proceeding with current state`);
+                    // networkidle is optional, ignore failure
                 }
                 return resp;
             }
             catch (e) {
-                console.log(`[${monitorName}] domcontentloaded failed, trying load event`);
-                const resp = await page.goto(monitor.url, { waitUntil: 'load', timeout: 45000 });
-                await page.waitForTimeout(3000);
+                console.log(`[${monitorName}] domcontentloaded failed, trying commit (least strict)`);
+                const resp = await page.goto(monitor.url, { waitUntil: 'commit', timeout: 20000 });
+                await page.waitForTimeout(5000); // Wait longer for hydration if we only got commit
                 return resp;
             }
         }, {
-            maxRetries: 3,
-            baseDelay: 2000,
+            maxRetries: 2,
+            baseDelay: 1000,
             monitorId: monitor.id,
             operation: `Navigation to ${monitor.url}`
         });
@@ -213,34 +355,68 @@ async function checkSingleMonitor(monitor, context = null) {
                         }
                     }, monitor.selector);
                     await page.waitForTimeout(1000);
+                    await page.waitForTimeout(1000);
                 }
                 catch (e2) {
-                    console.log(`[${monitorName}] Element not found: ${monitor.selector}. Attempting Self-Healing...`);
-                    try {
-                        const htmlSnapshot = await page.evaluate(() => {
-                            const clone = document.body.cloneNode(true);
-                            const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
-                            toRemove.forEach(el => el.remove());
-                            return clone.outerHTML;
-                        });
-                        const newSelector = await (0, ai_1.findSelector)(htmlSnapshot, monitor.selector, monitor.last_value || '', monitor.ai_prompt || null);
-                        if (newSelector) {
-                            console.log(`[${monitorName}] 🩹 AI Healed Selector: "${newSelector}"`);
-                            const verified = await page.$(newSelector);
-                            if (verified) {
-                                console.log(`[${monitorName}] Verified new selector works. Updating DB...`);
-                                db_1.default.run(`UPDATE monitors SET selector = ?, last_healed = ? WHERE id = ?`, [newSelector, new Date().toISOString(), monitor.id]);
-                                monitor.selector = newSelector;
-                                await page.waitForSelector(monitor.selector, { state: 'attached', timeout: 5000 });
-                                (0, notifications_1.sendNotification)(`🩹 Monitor Repaired: ${monitorName}`, `The selector was broken but AI fixed it.\nOld: ${monitor.selector}\nNew: ${newSelector}`, null, null, null);
+                    console.log(`[${monitorName}] Element not found: ${monitor.selector}. Checking eligibility for Self-Healing...`);
+                    // Check if page failed to load properly (HTTP Error) - Do not heal on 404/500
+                    if (httpStatus && httpStatus >= 400) {
+                        console.log(`[${monitorName}] HTTP ${httpStatus} detected - Skipping Self-Healing.`);
+                    }
+                    else if (monitor.suggested_selector) {
+                        console.log(`[${monitorName}] Pending suggestion exists (${monitor.suggested_selector}) - Skipping new AI analysis.`);
+                    }
+                    else {
+                        // Check browser/page health before attempting self-healing
+                        try {
+                            if (page.isClosed()) {
+                                console.log(`[${monitorName}] Page closed, skipping self-healing`);
+                                throw new Error('Page closed during check');
                             }
-                            else {
-                                console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
+                            const htmlSnapshot = await Promise.race([
+                                page.evaluate(() => {
+                                    const clone = document.body.cloneNode(true);
+                                    const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
+                                    toRemove.forEach(el => el.remove());
+                                    return clone.outerHTML;
+                                }),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('HTML snapshot timeout')), 10000))
+                            ]);
+                            const newSelector = await (0, ai_1.findSelector)(htmlSnapshot, monitor.selector, monitor.last_value || '', monitor.ai_prompt || null);
+                            if (newSelector) {
+                                console.log(`[${monitorName}] 🩹 AI Healed Selector: "${newSelector}"`);
+                                // Check page still alive
+                                if (page.isClosed()) {
+                                    console.log(`[${monitorName}] Page closed during healing, aborting`);
+                                    throw new Error('Page closed during healing');
+                                }
+                                const verified = await page.$(newSelector);
+                                if (verified) {
+                                    console.log(`[${monitorName}] Verified new selector works. Saving suggestion...`);
+                                    db_1.default.run(`UPDATE monitors SET suggested_selector = ? WHERE id = ?`, [newSelector, monitor.id]);
+                                    // Get language setting for translated notification
+                                    const lang = await getLanguage();
+                                    // Use APP_URL from environment variable (remove trailing slash if present)
+                                    const baseUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
+                                    const dashboardLink = baseUrl ? `${baseUrl}/monitor/${monitor.id}` : `/monitor/${monitor.id}`;
+                                    const plainText = `${t('selector_broken', lang)}: "${newSelector}".\n\n${t('approve_in_dashboard', lang)}:\n${dashboardLink}`;
+                                    const htmlMessage = `<p>${t('selector_broken', lang)}:</p><pre>${newSelector}</pre><p><a href="${dashboardLink}" style="display:inline-block;padding:10px 20px;background-color:#238636;color:white;text-decoration:none;border-radius:6px;margin-top:10px;">${t('review_approve', lang)}</a></p>`;
+                                    (0, notifications_1.sendNotification)(`${t('action_required', lang)}: ${monitorName}`, plainText, htmlMessage, null, null);
+                                }
+                                else {
+                                    console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
+                                }
                             }
                         }
-                    }
-                    catch (healErr) {
-                        console.error(`[${monitorName}] Self-Healing Failed:`, healErr);
+                        catch (healErr) {
+                            // Check if it's a browser/page closed error - don't log as full error
+                            if (healErr.message?.includes('closed') || healErr.message?.includes('Target')) {
+                                console.log(`[${monitorName}] Self-Healing skipped: browser/page closed`);
+                            }
+                            else {
+                                console.error(`[${monitorName}] Self-Healing Failed:`, healErr.message);
+                            }
+                        }
                     }
                 }
             }
@@ -263,7 +439,9 @@ async function checkSingleMonitor(monitor, context = null) {
         // Extract content
         let text = null;
         if (monitor.selector) {
-            for (let attempt = 1; attempt <= 3; attempt++) {
+            const maxRetries = monitor.retry_count ?? 3;
+            const retryDelay = monitor.retry_delay ?? 2000;
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 text = await page.evaluate((selector) => {
                     try {
                         const el = document.querySelector(selector);
@@ -273,15 +451,18 @@ async function checkSingleMonitor(monitor, context = null) {
                         return null;
                     }
                 }, monitor.selector);
+                if (text) {
+                    text = (0, shared_1.cleanValue)(text);
+                }
                 if (text && text.trim().length > 0)
                     break;
-                if (attempt === 3)
+                if (attempt === maxRetries)
                     break;
-                console.log(`[${monitorName}] Attempt ${attempt}: Text empty, retrying in 2s...`);
-                await page.waitForTimeout(2000);
+                console.log(`[${monitorName}] Attempt ${attempt}/${maxRetries}: Text empty, retrying in ${retryDelay}ms...`);
+                await page.waitForTimeout(retryDelay);
             }
             if (text === null) {
-                console.warn(`[${monitorName}] Element not found after 3 attempts`);
+                console.warn(`[${monitorName}] Element not found after ${maxRetries} attempts`);
             }
             else {
                 const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
@@ -291,7 +472,7 @@ async function checkSingleMonitor(monitor, context = null) {
         const nowStr = new Date().toISOString();
         let changed = false;
         let status = 'unchanged';
-        screenshotPath = path_1.default.join(__dirname, 'public', 'screenshots', `monitor-${monitor.id}-${Date.now()}.png`);
+        screenshotPath = getPublicPath('screenshots', `monitor-${monitor.id}-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: true });
         let visualChange = false;
         let diffFilename = null;
@@ -313,7 +494,7 @@ async function checkSingleMonitor(monitor, context = null) {
                         const diff = new pngjs_1.PNG({ width, height });
                         pixelmatch(img1.data, img2.data, diff.data, width, height, { threshold: 0.1 });
                         diffFilename = `diff-${monitor.id}-${Date.now()}.png`;
-                        const diffPath = path_1.default.join(__dirname, 'public', 'screenshots', diffFilename);
+                        const diffPath = getPublicPath('screenshots', diffFilename);
                         fs_1.default.writeFileSync(diffPath, pngjs_1.PNG.sync.write(diff));
                     }
                     catch (e) {
@@ -334,7 +515,7 @@ async function checkSingleMonitor(monitor, context = null) {
                 if (numDiffPixels > 0) {
                     visualChange = true;
                     diffFilename = `diff-${monitor.id}-${Date.now()}.png`;
-                    const diffPath = path_1.default.join(__dirname, 'public', 'screenshots', diffFilename);
+                    const diffPath = getPublicPath('screenshots', diffFilename);
                     fs_1.default.writeFileSync(diffPath, pngjs_1.PNG.sync.write(diff));
                 }
             }
@@ -458,9 +639,7 @@ async function checkSingleMonitor(monitor, context = null) {
                             <html>
                             <body style="background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; padding: 20px;">
                                 <h3 style="color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 10px;">${identifier}</h3>
-                                <div style="font-family: monospace; white-space: pre-wrap; font-size: 14px;">
-                                ${diffHtml}
-                                </div>
+                                <div style="font-family: monospace; white-space: pre-wrap; font-size: 12px;">${diffHtml}</div>
                             </body>
                             </html>
                         `;
@@ -471,7 +650,7 @@ async function checkSingleMonitor(monitor, context = null) {
                         });
                         await renderPage.setViewportSize({ width: 600, height: Math.ceil(boundingBox.height) + 50 });
                         const filename = `diff_render_${monitor.id}_${Date.now()}.png`;
-                        diffImagePath = path_1.default.join(__dirname, 'public', 'screenshots', filename);
+                        diffImagePath = getPublicPath('screenshots', filename);
                         await renderPage.screenshot({ path: diffImagePath });
                         await renderPage.close();
                         console.log("Generated diff image:", diffImagePath);
@@ -537,10 +716,10 @@ async function checkSingleMonitor(monitor, context = null) {
             }
             else {
                 console.log(`[${monitorName}] First run - Saving initial value without alert.`);
-                changed = true;
+                // First run: save initial value but don't mark as 'changed' to avoid badge increment
                 status = 'unchanged';
             }
-            db_1.default.run(`INSERT INTO check_history (monitor_id, status, value, created_at, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary, http_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [monitor.id, status, text, nowStr, screenshotPath, monitor.last_screenshot, diffFilename ? path_1.default.join(__dirname, 'public', 'screenshots', diffFilename) : null, aiSummary, httpStatus], (err) => {
+            db_1.default.run(`INSERT INTO check_history (monitor_id, status, value, created_at, screenshot_path, prev_screenshot_path, diff_screenshot_path, ai_summary, http_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [monitor.id, status, text, nowStr, screenshotPath, monitor.last_screenshot, diffFilename ? getPublicPath('screenshots', diffFilename) : null, aiSummary, httpStatus], (err) => {
                 if (err)
                     console.error("DB Insert Error (History):", err.message);
                 else
@@ -630,23 +809,25 @@ async function checkSingleMonitor(monitor, context = null) {
         }
         if (changed) {
             if (monitor.type === 'visual') {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ?, unread_count = unread_count + 1 WHERE id = ?`, [nowStr, text, screenshotPath, nowStr, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, screenshotPath, nowStr, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
             }
             else {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_change = ?, unread_count = unread_count + 1 WHERE id = ?`, [nowStr, text, nowStr, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_change = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, nowStr, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
                 fs_1.default.unlink(screenshotPath, (delErr) => { if (delErr)
                     console.error("Error deleting unused screenshot:", delErr); });
             }
         }
         else {
+            // No change detected (or first run)
             if (monitor.type === 'visual') {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_screenshot = ? WHERE id = ?`, [nowStr, screenshotPath, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_screenshot = ?, last_value = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, screenshotPath, text, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
             }
             else {
-                db_1.default.run(`UPDATE monitors SET last_check = ? WHERE id = ?`, [nowStr, monitor.id], (err) => { if (err)
+                // For text monitors, always update last_value (needed for first run baseline)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
                 fs_1.default.unlink(screenshotPath, (delErr) => { if (delErr)
                     console.error("Error deleting unused screenshot:", delErr); });
@@ -656,12 +837,20 @@ async function checkSingleMonitor(monitor, context = null) {
     catch (error) {
         console.error(`[${monitorName}] Error:`, error.message);
         db_1.default.run(`INSERT INTO check_history (monitor_id, status, response_time, created_at, value) VALUES (?, ?, ?, ?, ?)`, [monitor.id, 'error', 0, new Date().toISOString(), error.message]);
+        // Only increment consecutive failures for non-browser errors
+        if (!isBrowserError(error.message)) {
+            db_1.default.run(`UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?`, [new Date().toISOString(), monitor.id]);
+        }
+        else {
+            console.log(`[${monitorName}] Browser/infrastructure error - not counting as failure`);
+            db_1.default.run(`UPDATE monitors SET last_check = ? WHERE id = ?`, [new Date().toISOString(), monitor.id]);
+        }
     }
     finally {
         if (page)
             await page.close();
-        if (internalBrowser)
-            await internalBrowser.close();
+        if (pooledContext)
+            await pooledContext.release();
     }
 }
 async function executeScenario(page, scenario) {
@@ -739,7 +928,7 @@ async function previewScenario(url, scenarioConfig, proxySettings = null) {
         }
         await page.waitForTimeout(1000);
         const filename = `preview-${Date.now()}.png`;
-        const filepath = path_1.default.join(__dirname, 'public', 'screenshots', filename);
+        const filepath = getPublicPath('screenshots', filename);
         await page.screenshot({ path: filepath, fullPage: true });
         screenshotFilename = filename;
     }
@@ -752,10 +941,126 @@ async function previewScenario(url, scenarioConfig, proxySettings = null) {
     }
     return screenshotFilename;
 }
+async function cleanupScreenshots() {
+    console.log('Running daily screenshot cleanup...');
+    const screenshotsDir = getPublicPath('screenshots');
+    const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const now = Date.now();
+    try {
+        if (!fs_1.default.existsSync(screenshotsDir))
+            return;
+        const files = fs_1.default.readdirSync(screenshotsDir);
+        let deletedCount = 0;
+        for (const file of files) {
+            if (file === '.keep')
+                continue;
+            const filePath = path_1.default.join(screenshotsDir, file);
+            try {
+                const stats = fs_1.default.statSync(filePath);
+                if (now - stats.mtimeMs > MAX_AGE_MS) {
+                    fs_1.default.unlinkSync(filePath);
+                    deletedCount++;
+                }
+            }
+            catch (err) {
+                console.error(`Error processing file ${file} for cleanup:`, err.message);
+            }
+        }
+        console.log(`Cleanup complete. Deleted ${deletedCount} old screenshots.`);
+    }
+    catch (error) {
+        console.error('Error during screenshot cleanup:', error.message);
+    }
+}
+/**
+ * Watchdog: Detect when monitors are stuck in cooldown and auto-recover
+ */
+async function watchdogCheck() {
+    return new Promise((resolve) => {
+        // First get the threshold from settings
+        db_1.default.get("SELECT watchdog_threshold FROM settings WHERE id = 1", [], (settingsErr, settingsRow) => {
+            const threshold = settingsRow?.watchdog_threshold ?? 50;
+            db_1.default.all("SELECT * FROM monitors WHERE active = 1", [], async (err, monitors) => {
+                if (err) {
+                    (0, logger_1.logError)('watchdog', `Database error: ${err.message}`);
+                    resolve();
+                    return;
+                }
+                if (monitors.length === 0) {
+                    resolve();
+                    return;
+                }
+                const now = new Date();
+                let monitorsInCooldown = 0;
+                let totalActiveMonitors = 0;
+                for (const m of monitors) {
+                    totalActiveMonitors++;
+                    const consecutiveFailures = m.consecutive_failures || 0;
+                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && m.last_check) {
+                        const failureMultiplier = Math.min(Math.pow(2, consecutiveFailures - MAX_CONSECUTIVE_FAILURES), MAX_COOLDOWN_MINUTES / BASE_COOLDOWN_MINUTES);
+                        const actualCooldown = Math.min(BASE_COOLDOWN_MINUTES * failureMultiplier, MAX_COOLDOWN_MINUTES);
+                        const cooldownEnd = new Date(new Date(m.last_check).getTime() + actualCooldown * 60000);
+                        if (now < cooldownEnd) {
+                            monitorsInCooldown++;
+                        }
+                    }
+                }
+                // If monitors in cooldown exceed threshold, auto-recover
+                const cooldownPercentage = (monitorsInCooldown / totalActiveMonitors) * 100;
+                if (totalActiveMonitors > 0 && cooldownPercentage >= threshold) {
+                    console.log(`[WATCHDOG] ⚠️ ${monitorsInCooldown}/${totalActiveMonitors} monitors (${cooldownPercentage.toFixed(0)}%) exceed ${threshold}% threshold - AUTO-RECOVERING!`);
+                    // Reset all failure counters
+                    db_1.default.run("UPDATE monitors SET consecutive_failures = 0", [], (updateErr) => {
+                        if (updateErr) {
+                            (0, logger_1.logError)('watchdog', `Failed to reset cooldowns: ${updateErr.message}`);
+                        }
+                        else {
+                            console.log('[WATCHDOG] ✅ All cooldowns have been reset');
+                            // Send notification about recovery
+                            (0, notifications_1.sendNotification)('🔄 DeltaWatch Auto-Recovery', `${monitorsInCooldown}/${totalActiveMonitors} monitors exceeded the ${threshold}% cooldown threshold. The system has automatically reset all failure counters to resume monitoring.`, `<h2>🔄 Auto-Recovery Triggered</h2>
+                                <p><strong>${monitorsInCooldown}/${totalActiveMonitors}</strong> monitors exceeded the ${threshold}% cooldown threshold.</p>
+                                <p>The watchdog has automatically reset all failure counters to resume normal monitoring.</p>
+                                <p><small>Sent by DeltaWatch Watchdog</small></p>`, null, null);
+                        }
+                        resolve();
+                    });
+                }
+                else if (monitorsInCooldown > 0) {
+                    console.log(`[WATCHDOG] ${monitorsInCooldown}/${totalActiveMonitors} monitors in cooldown (${cooldownPercentage.toFixed(0)}% < ${threshold}% threshold) - system operational`);
+                    resolve();
+                }
+                else {
+                    resolve();
+                }
+            });
+        });
+    });
+}
 function startScheduler() {
-    node_cron_1.default.schedule('* * * * *', () => {
-        checkMonitors();
+    let isCheckRunning = false;
+    // Run every minute
+    node_cron_1.default.schedule('* * * * *', async () => {
+        if (isCheckRunning) {
+            console.log('Skipping monitor check: previous run still active');
+            return;
+        }
+        isCheckRunning = true;
+        try {
+            await checkMonitors();
+        }
+        finally {
+            isCheckRunning = false;
+        }
+    });
+    // Watchdog: Run every 5 minutes to detect and recover from stuck state
+    node_cron_1.default.schedule('*/5 * * * *', async () => {
+        await watchdogCheck();
+    });
+    // Run cleanup every day at midnight
+    node_cron_1.default.schedule('0 0 * * *', () => {
+        cleanupScreenshots();
     });
     console.log('Scheduler started.');
+    console.log('Watchdog enabled - will auto-recover if all monitors get stuck in cooldown.');
 }
 //# sourceMappingURL=scheduler.js.map

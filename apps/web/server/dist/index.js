@@ -54,8 +54,39 @@ const envConfig = (0, env_1.enforceEnv)();
 playwright_extra_1.chromium.use((0, puppeteer_extra_plugin_stealth_1.default)());
 const app = (0, express_1.default)();
 const PORT = envConfig.PORT;
+// Trust reverse proxy (nginx, Cloudflare, etc.)
+// This is required for express-rate-limit to work correctly behind a proxy
+app.set('trust proxy', 1);
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: '50mb' }));
+// Helper to resolve public folder path (works in both dev and Docker/production)
+// In dev: __dirname is the source folder, public is at ./public
+// In Docker: __dirname is dist/, public is at ../public
+const getPublicPath = (...subpaths) => {
+    // Try direct path first (dev mode)
+    const directPath = path_1.default.join(__dirname, 'public', ...subpaths);
+    if (fs_1.default.existsSync(directPath))
+        return directPath;
+    // Try parent path (Docker/production mode)
+    return path_1.default.join(__dirname, '..', 'public', ...subpaths);
+};
+// Helper to get user label for logging: "email (ID: X)"
+const getUserLabel = (userId) => {
+    return new Promise((resolve) => {
+        if (!userId) {
+            resolve('unknown');
+            return;
+        }
+        db_1.default.get('SELECT email FROM users WHERE id = ?', [userId], (err, row) => {
+            if (err || !row) {
+                resolve(`User ${userId}`);
+            }
+            else {
+                resolve(`${row.email} (ID: ${userId})`);
+            }
+        });
+    });
+};
 // Rate Limiting
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const generalLimiter = (0, express_rate_limit_1.default)({
@@ -146,6 +177,61 @@ app.get('/api/health', async (req, res) => {
     const allOk = checks.database === 'ok' && checks.browser === 'ok';
     res.status(allOk ? 200 : 503).json(checks);
 });
+// Deep Health Check - includes scheduler and browser pool health
+// Use this endpoint for Docker/Kubernetes liveness probes
+app.get('/api/health/deep', async (req, res) => {
+    const { getPoolStats, forceResetPool } = await Promise.resolve().then(() => __importStar(require('./browserPool')));
+    const { getSchedulerHealth } = await Promise.resolve().then(() => __importStar(require('./scheduler')));
+    const poolStats = getPoolStats();
+    const schedulerHealth = getSchedulerHealth();
+    const checks = {
+        timestamp: new Date().toISOString(),
+        server: 'ok',
+        database: 'unknown',
+        scheduler: {
+            healthy: schedulerHealth.healthy,
+            lastSuccessfulCheck: new Date(schedulerHealth.lastSuccessfulCheck).toISOString(),
+            errors: schedulerHealth.schedulerErrors
+        },
+        browserPool: {
+            ...poolStats,
+            status: poolStats.healthy ? 'ok' : 'degraded'
+        }
+    };
+    // Check database connectivity
+    try {
+        await new Promise((resolve, reject) => {
+            db_1.default.get('SELECT 1', (err) => {
+                if (err)
+                    reject(err);
+                else
+                    resolve();
+            });
+        });
+        checks.database = 'ok';
+    }
+    catch (e) {
+        checks.database = 'error';
+    }
+    // Determine overall health
+    const isHealthy = checks.database === 'ok' &&
+        schedulerHealth.healthy &&
+        poolStats.healthy;
+    // If browser pool is unhealthy, try to recover
+    if (!poolStats.healthy) {
+        (0, logger_1.logWarn)('api', 'Health check detected unhealthy browser pool, attempting recovery...');
+        try {
+            await forceResetPool();
+        }
+        catch (e) {
+            // Recovery failed, but we'll report the status
+        }
+    }
+    res.status(isHealthy ? 200 : 503).json({
+        status: isHealthy ? 'healthy' : 'unhealthy',
+        ...checks
+    });
+});
 // AI Analyze Page endpoint (for browser extension and Editor auto-detect)
 app.post('/api/ai/analyze-page', auth.authenticateToken, async (req, res) => {
     const { url, html, prompt } = req.body;
@@ -219,7 +305,7 @@ app.get('/api/ai/models', auth.authenticateToken, async (req, res) => {
     }
 });
 // Serve static files
-app.use('/static', express_1.default.static(path_1.default.join(__dirname, 'public')));
+app.use('/static', express_1.default.static(getPublicPath()));
 let globalBrowser = null;
 const sessionContexts = new Map();
 // Cleanup interval
@@ -237,9 +323,10 @@ setInterval(async () => {
     }
 }, 60000);
 // Analytics Endpoint
-app.get('/api/stats', auth.authenticateToken, (req, res) => {
-    console.log('[API] Stats requested by user:', req.user?.userId);
+app.get('/api/stats', auth.authenticateToken, async (req, res) => {
     const userId = req.user?.userId;
+    const userLabel = await getUserLabel(userId);
+    console.log(`[API] Stats requested by ${userLabel}`);
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const queries = {
         totalMonitors: new Promise((resolve, reject) => {
@@ -487,11 +574,21 @@ app.post('/preview-scenario', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-// Proxy endpoint
+// Proxy endpoint - with concurrency limit to prevent blocking
+let proxyRequestsInFlight = 0;
+const MAX_CONCURRENT_PROXY = 1; // Only 1 proxy request at a time to avoid blocking scheduler
 app.get('/proxy', async (req, res) => {
+    // Check if too many proxy requests are in flight
+    if (proxyRequestsInFlight >= MAX_CONCURRENT_PROXY) {
+        console.log(`[Proxy] Too many requests (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY}), returning busy`);
+        return res.status(503).send('Server busy, please try again');
+    }
+    proxyRequestsInFlight++;
+    console.log(`[Proxy] Request started (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
     const url = req.query.url;
     const session_id = req.query.session_id;
     if (!url) {
+        proxyRequestsInFlight--;
         return res.status(400).send('Missing URL parameter');
     }
     try {
@@ -562,19 +659,59 @@ app.get('/proxy', async (req, res) => {
             console.log(`[Browser Network Error] ${request.url()} : ${request.failure()?.errorText}`);
         });
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
             try {
-                await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 10000 });
+                await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 3000 });
             }
             catch (waitErr) {
                 console.log("Loader wait timeout or not found, proceeding...");
             }
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(500);
+            // Auto-dismiss cookie banners
+            // First: Try to handle Sourcepoint/eBay consent iframes (used by Marktplaats, eBay, etc.)
+            try {
+                const consentFrame = page.frameLocator('iframe[title="SP Consent Message"], iframe[id^="sp_message_iframe_"]');
+                const acceptButton = consentFrame.locator('button:has-text("Accepteren"), button:has-text("Accept"), button:has-text("Akkoord"), button[title="Accepteren"]');
+                // Try clicking the accept button in the iframe with a short timeout
+                await acceptButton.first().click({ timeout: 3000 });
+                console.log('[Proxy] Dismissed Sourcepoint cookie banner in iframe');
+                await page.waitForTimeout(500);
+            }
+            catch (e) {
+                // Sourcepoint iframe not found or click failed, try generic selectors
+                console.log('[Proxy] No Sourcepoint iframe found, trying generic selectors...');
+                const cookieSelectors = [
+                    'button[id*="accept"]',
+                    'button[id*="Accept"]',
+                    'button[class*="accept"]',
+                    'button:has-text("Accepteren")',
+                    'button:has-text("Akkoord")',
+                    'button:has-text("Accept")',
+                    '#gdpr-consent-accept-button',
+                    'button[data-consent="accept"]',
+                    'a:has-text("Doorgaan zonder")',
+                ];
+                for (const selector of cookieSelectors) {
+                    try {
+                        const button = await page.$(selector);
+                        if (button) {
+                            console.log(`[Proxy] Found cookie button: ${selector}`);
+                            await button.click();
+                            await page.waitForTimeout(500);
+                            break;
+                        }
+                    }
+                    catch (err) {
+                        // Selector didn't match or click failed, continue
+                    }
+                }
+            }
+            await page.waitForTimeout(500);
         }
         catch (e) {
             console.log("Navigation error (likely timeout), proceeding:", e.message);
         }
-        const selectorScript = fs_1.default.readFileSync(path_1.default.join(__dirname, 'public', 'selector.js'), 'utf8');
+        const selectorScript = fs_1.default.readFileSync(getPublicPath('selector.js'), 'utf8');
         const injectScripts = async () => {
             await page.evaluate((scriptContent) => {
                 const script = document.createElement('script');
@@ -626,6 +763,10 @@ app.get('/proxy', async (req, res) => {
     catch (error) {
         console.error('Proxy Error:', error);
         res.status(500).send('Error fetching page: ' + error.message);
+    }
+    finally {
+        proxyRequestsInFlight--;
+        console.log(`[Proxy] Request completed (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
     }
 });
 // Server-Side Scenario Execution (VISIBLE)
@@ -716,7 +857,7 @@ app.post('/run-scenario-live', async (req, res) => {
         console.log(`[RunScenarioLive] Waiting for page to settle...`);
         await page.waitForTimeout(3000);
         const filename = `live-run-${Date.now()}.png`;
-        const filepath = path_1.default.join(__dirname, 'public', 'screenshots', filename);
+        const filepath = getPublicPath('screenshots', filename);
         await page.screenshot({ path: filepath, fullPage: true });
         console.log(`[RunScenarioLive] Done! Browser stays open for 5s...`);
         await page.waitForTimeout(5000);
@@ -770,11 +911,96 @@ app.get('/monitors', auth.authenticateToken, (req, res) => {
         });
     });
 });
+// ==================== GROUPS API ====================
+// Get all groups for user
+app.get('/groups', auth.authenticateToken, (req, res) => {
+    const userId = req.user?.userId;
+    db_1.default.all("SELECT * FROM groups WHERE user_id = ? ORDER BY sort_order ASC, name ASC", [userId], (err, rows) => {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json({ message: 'success', data: rows || [] });
+    });
+});
+// Create a group
+app.post('/groups', auth.authenticateToken, (req, res) => {
+    const { name, color, icon } = req.body;
+    const userId = req.user?.userId;
+    if (!name) {
+        return res.status(400).json({ error: 'Name is required' });
+    }
+    db_1.default.run(`INSERT INTO groups (user_id, name, color, icon) VALUES (?, ?, ?, ?)`, [userId, name, color || '#6366f1', icon || 'folder'], function (err) {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json({ message: 'success', data: { id: this.lastID, name, color, icon } });
+    });
+});
+// Update a group
+app.put('/groups/:id', auth.authenticateToken, (req, res) => {
+    const { name, color, icon, sort_order } = req.body;
+    const userId = req.user?.userId;
+    const groupId = req.params.id;
+    db_1.default.run(`UPDATE groups SET name = COALESCE(?, name), color = COALESCE(?, color), icon = COALESCE(?, icon), sort_order = COALESCE(?, sort_order) WHERE id = ? AND user_id = ?`, [name, color, icon, sort_order, groupId, userId], function (err) {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json({ message: 'Group updated' });
+    });
+});
+// Delete a group
+app.delete('/groups/:id', auth.authenticateToken, (req, res) => {
+    const userId = req.user?.userId;
+    const groupId = req.params.id;
+    // First, unassign all monitors from this group
+    db_1.default.run("UPDATE monitors SET group_id = NULL WHERE group_id = ? AND user_id = ?", [groupId, userId], (err) => {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        // Then delete the group
+        db_1.default.run("DELETE FROM groups WHERE id = ? AND user_id = ?", [groupId, userId], function (err) {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json({ message: 'Group deleted' });
+        });
+    });
+});
+// Reorder monitors (drag & drop)
+app.patch('/monitors/reorder', auth.authenticateToken, (req, res) => {
+    const { items } = req.body; // Array of { id, sort_order, group_id? }
+    const userId = req.user?.userId;
+    if (!Array.isArray(items)) {
+        return res.status(400).json({ error: 'Items array is required' });
+    }
+    const stmt = db_1.default.prepare("UPDATE monitors SET sort_order = ?, group_id = ? WHERE id = ? AND user_id = ?");
+    let errors = 0;
+    items.forEach((item) => {
+        stmt.run(item.sort_order, item.group_id ?? null, item.id, userId, (err) => {
+            if (err)
+                errors++;
+        });
+    });
+    stmt.finalize((err) => {
+        if (err || errors > 0) {
+            res.status(500).json({ error: 'Some items failed to update' });
+        }
+        else {
+            res.json({ message: 'Order updated' });
+        }
+    });
+});
+// ==================== MONITORS API ====================
 // Add a new monitor
 app.post('/monitors', auth.authenticateToken, (req, res) => {
-    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual } = req.body;
+    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id } = req.body;
     const userId = req.user?.userId;
-    db_1.default.run(`INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0], function (err) {
+    db_1.default.run(`INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0, group_id || null], function (err) {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -787,14 +1013,151 @@ app.post('/monitors', auth.authenticateToken, (req, res) => {
 });
 // Update a monitor
 app.put('/monitors/:id', auth.authenticateToken, (req, res) => {
-    const { selector, selector_text, interval, type, name, active, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual } = req.body;
-    db_1.default.run(`UPDATE monitors SET selector = COALESCE(?, selector), selector_text = COALESCE(?, selector_text), interval = COALESCE(?, interval), type = COALESCE(?, type), name = COALESCE(?, name), active = COALESCE(?, active), notify_config = COALESCE(?, notify_config), ai_prompt = COALESCE(?, ai_prompt), scenario_config = COALESCE(?, scenario_config), tags = COALESCE(?, tags), keywords = COALESCE(?, keywords), ai_only_visual = COALESCE(?, ai_only_visual) WHERE id = ? AND user_id = ?`, [selector, selector_text, interval, type, name, active, notify_config ? JSON.stringify(notify_config) : null, ai_prompt, scenario_config, tags ? JSON.stringify(tags) : null, keywords ? JSON.stringify(keywords) : null, ai_only_visual, req.params.id, req.user?.userId], function (err) {
+    const { url, selector, selector_text, interval, type, name, active, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual, retry_count, retry_delay } = req.body;
+    db_1.default.run(`UPDATE monitors SET url = COALESCE(?, url), selector = COALESCE(?, selector), selector_text = COALESCE(?, selector_text), interval = COALESCE(?, interval), type = COALESCE(?, type), name = COALESCE(?, name), active = COALESCE(?, active), notify_config = COALESCE(?, notify_config), ai_prompt = COALESCE(?, ai_prompt), scenario_config = COALESCE(?, scenario_config), tags = COALESCE(?, tags), keywords = COALESCE(?, keywords), ai_only_visual = COALESCE(?, ai_only_visual), retry_count = COALESCE(?, retry_count), retry_delay = COALESCE(?, retry_delay) WHERE id = ? AND user_id = ?`, [url, selector, selector_text, interval, type, name, active, notify_config ? JSON.stringify(notify_config) : null, ai_prompt, scenario_config, tags ? JSON.stringify(tags) : null, keywords ? JSON.stringify(keywords) : null, ai_only_visual, retry_count, retry_delay, req.params.id, req.user?.userId], function (err) {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
         }
         res.json({ message: "Monitor updated" });
     });
+});
+// Accept Suggested Selector
+app.post('/monitors/:id/suggestion/accept', auth.authenticateToken, async (req, res) => {
+    const userId = req.user?.userId;
+    const monitorId = req.params.id;
+    const userLabel = await getUserLabel(userId);
+    console.log(`[Suggestion Accept] ${userLabel} accepting suggestion for monitor ${monitorId}`);
+    db_1.default.get('SELECT suggested_selector FROM monitors WHERE id = ? AND user_id = ?', [monitorId, userId], (err, row) => {
+        if (err) {
+            console.error('[Suggestion Accept] DB Error:', err.message);
+            return res.status(500).json({ error: 'Database error', details: err.message });
+        }
+        if (!row) {
+            console.warn(`[Suggestion Accept] Monitor ${monitorId} not found for ${userLabel}`);
+            return res.status(404).json({ error: 'Monitor not found or access denied' });
+        }
+        if (!row.suggested_selector) {
+            console.warn(`[Suggestion Accept] No suggestion for monitor ${monitorId}`);
+            return res.status(400).json({ error: 'No suggestion to accept' });
+        }
+        console.log(`[Suggestion Accept] Applying selector: ${row.suggested_selector}`);
+        db_1.default.run(`UPDATE monitors SET selector = suggested_selector, suggested_selector = NULL, last_healed = ? WHERE id = ?`, [new Date().toISOString(), monitorId], (updateErr) => {
+            if (updateErr) {
+                console.error('[Suggestion Accept] Update Error:', updateErr.message);
+                return res.status(500).json({ error: 'Update failed', details: updateErr.message });
+            }
+            console.log(`[Suggestion Accept] Success for monitor ${monitorId}`);
+            res.json({ message: 'Suggestion accepted', success: true });
+        });
+    });
+});
+// Reject Suggested Selector
+app.post('/monitors/:id/suggestion/reject', auth.authenticateToken, (req, res) => {
+    const userId = req.user?.userId;
+    const monitorId = req.params.id;
+    db_1.default.run(`UPDATE monitors SET suggested_selector = NULL WHERE id = ? AND user_id = ?`, [monitorId, userId], (updateErr) => {
+        if (updateErr)
+            return res.status(500).send(updateErr.message);
+        res.json({ message: 'Suggestion rejected' });
+    });
+});
+// Admin: Reset all cooldowns
+app.post('/api/admin/reset-cooldowns', auth.authenticateToken, (req, res) => {
+    const userId = req.user?.userId;
+    // Check if user is admin and get their email
+    db_1.default.get('SELECT role, email FROM users WHERE id = ?', [userId], (err, user) => {
+        if (err || !user) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        if (user.role !== 'admin') {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+        // Reset all cooldowns
+        db_1.default.run('UPDATE monitors SET consecutive_failures = 0', [], (updateErr) => {
+            if (updateErr) {
+                console.error('[Admin] Reset cooldowns failed:', updateErr.message);
+                return res.status(500).json({ error: 'Failed to reset cooldowns' });
+            }
+            console.log(`[Admin] ${user.email} (ID: ${userId}) reset all cooldowns`);
+            res.json({ success: true, message: 'All cooldowns have been reset' });
+        });
+    });
+});
+// Test a selector against a URL
+app.post('/api/test-selector', auth.authenticateToken, async (req, res) => {
+    const { url, selector } = req.body;
+    if (!url || !selector) {
+        return res.status(400).json({ success: false, error: 'URL and selector are required' });
+    }
+    let release = null;
+    let page = null;
+    try {
+        const { acquireBrowser } = await Promise.resolve().then(() => __importStar(require('./browserPool')));
+        const browser = await acquireBrowser();
+        release = browser.release;
+        page = await browser.context.newPage();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(1000);
+        // Try to dismiss cookie banners first
+        try {
+            const consentFrame = page.frameLocator('iframe[title="SP Consent Message"], iframe[id^="sp_message_iframe_"]');
+            const acceptButton = consentFrame.locator('button:has-text("Accepteren"), button:has-text("Accept"), button:has-text("Akkoord")');
+            await acceptButton.first().click({ timeout: 2000 });
+            await page.waitForTimeout(500);
+        }
+        catch (e) {
+            // No consent iframe, try generic buttons
+            const cookieSelectors = [
+                'button[id*="accept"]',
+                'button:has-text("Accepteren")',
+                'button:has-text("Accept")',
+                '#gdpr-consent-accept-button',
+            ];
+            for (const cookieSelector of cookieSelectors) {
+                try {
+                    const button = await page.$(cookieSelector);
+                    if (button) {
+                        await button.click();
+                        await page.waitForTimeout(500);
+                        break;
+                    }
+                }
+                catch (err) { /* ignore */ }
+            }
+        }
+        // Test the selector
+        const elements = await page.$$(selector);
+        const count = elements.length;
+        if (count === 0) {
+            await page.close();
+            if (release)
+                await release();
+            return res.json({ success: false, error: 'No elements match this selector' });
+        }
+        // Get text content from first element
+        const text = await elements[0].textContent() || '';
+        const cleanedText = text.trim().substring(0, 500); // Limit preview length
+        await page.close();
+        if (release)
+            await release();
+        res.json({
+            success: true,
+            count,
+            text: cleanedText
+        });
+    }
+    catch (e) {
+        console.error('[test-selector] Error:', e.message);
+        try {
+            if (page)
+                await page.close();
+            if (release)
+                await release();
+        }
+        catch (cleanupErr) { /* ignore */ }
+        res.status(500).json({ success: false, error: e.message });
+    }
 });
 // Delete a monitor (Protected)
 app.delete('/monitors/:id', auth.authenticateToken, (req, res) => {
@@ -822,12 +1185,15 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 app.post('/api/auth/login', async (req, res) => {
+    console.log('[Auth] Login attempt for:', req.body?.email);
     try {
         const { email, password } = req.body;
         const result = await auth.loginUser(email, password);
+        console.log('[Auth] Login successful for:', email);
         res.json(result);
     }
     catch (e) {
+        console.log('[Auth] Login failed for:', req.body?.email, '- Reason:', e.message);
         res.status(401).json({ error: e.message });
     }
 });

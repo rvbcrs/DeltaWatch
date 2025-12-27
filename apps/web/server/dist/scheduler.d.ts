@@ -11,6 +11,11 @@ interface ProxySettings {
     password?: string;
     auth?: string;
 }
+export declare function getSchedulerHealth(): {
+    lastSuccessfulCheck: number;
+    schedulerErrors: number;
+    healthy: boolean;
+};
 declare function checkSingleMonitor(monitor: Monitor, context?: BrowserContext | null): Promise<void>;
 declare function executeScenario(page: Page, scenario: ScenarioStep[]): Promise<void>;
 declare function previewScenario(url: string, scenarioConfig: string | ScenarioStep[] | null, proxySettings?: ProxySettings | null): Promise<string | null>;

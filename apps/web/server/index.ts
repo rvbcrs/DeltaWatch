@@ -626,13 +626,24 @@ app.post('/preview-scenario', async (req: Request, res: Response) => {
         res.status(500).json({ error: e.message });
     }
 });
+// Proxy endpoint - with concurrency limit to prevent blocking
+let proxyRequestsInFlight = 0;
+const MAX_CONCURRENT_PROXY = 1; // Only 1 proxy request at a time to avoid blocking scheduler
 
-// Proxy endpoint
 app.get('/proxy', async (req: Request, res: Response) => {
+    // Check if too many proxy requests are in flight
+    if (proxyRequestsInFlight >= MAX_CONCURRENT_PROXY) {
+        console.log(`[Proxy] Too many requests (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY}), returning busy`);
+        return res.status(503).send('Server busy, please try again');
+    }
+    proxyRequestsInFlight++;
+    console.log(`[Proxy] Request started (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
+    
     const url = req.query.url as string | undefined;
     const session_id = req.query.session_id as string | undefined;
 
     if (!url) {
+        proxyRequestsInFlight--;
         return res.status(400).send('Missing URL parameter');
     }
 
@@ -706,15 +717,15 @@ app.get('/proxy', async (req: Request, res: Response) => {
         });
 
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
             try {
-                await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 10000 });
+                await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 3000 });
             } catch (waitErr) {
                 console.log("Loader wait timeout or not found, proceeding...");
             }
 
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(500);
 
             // Auto-dismiss cookie banners
             // First: Try to handle Sourcepoint/eBay consent iframes (used by Marktplaats, eBay, etc.)
@@ -820,6 +831,9 @@ app.get('/proxy', async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('Proxy Error:', error);
         res.status(500).send('Error fetching page: ' + error.message);
+    } finally {
+        proxyRequestsInFlight--;
+        console.log(`[Proxy] Request completed (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
     }
 });
 

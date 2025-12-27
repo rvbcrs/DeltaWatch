@@ -26,10 +26,25 @@ export interface Monitor {
     notify_config?: string;
     ai_prompt?: string;
     ai_only_visual?: number;
+    suggested_selector?: string;
     scenario_config?: string;
     unread_count: number;
     tags?: string;
     keywords?: string;
+    retry_count?: number;
+    retry_delay?: number;
+    group_id?: number;
+    sort_order?: number;
+    consecutive_failures: number;
+    created_at: string;
+}
+export interface Group {
+    id: number;
+    user_id: number;
+    name: string;
+    color: string;
+    icon: string;
+    sort_order: number;
     created_at: string;
 }
 export interface CheckHistory {
@@ -69,6 +84,7 @@ export interface Settings {
     proxy_auth?: string;
     webhook_enabled: number;
     webhook_url?: string;
+    app_url?: string;
     created_at: string;
 }
 export interface NotifyConfig {
@@ -106,6 +122,8 @@ export interface MonitorUpdateRequest {
     ai_prompt?: string;
     ai_only_visual?: boolean;
     scenario_config?: string;
+    retry_count?: number;
+    retry_delay?: number;
 }
 import { Request } from 'express';
 export interface AuthRequest extends Request {

@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { chromium } from 'playwright-extra';
-import type { BrowserContext, ConsoleMessage, Request as PlaywrightRequest } from 'playwright-core';
+import type { BrowserContext, Page, ConsoleMessage, Request as PlaywrightRequest } from 'playwright-core';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import path from 'path';
 import fs from 'fs';
@@ -626,6 +626,76 @@ app.post('/preview-scenario', async (req: Request, res: Response) => {
         res.status(500).json({ error: e.message });
     }
 });
+
+// Scan page for price endpoint
+app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+    const { url } = req.body;
+    
+    if (!url) {
+        return res.status(400).json({ error: 'Missing URL' });
+    }
+    
+    console.log(`[ScanPrice] Scanning ${url} for price...`);
+    
+    let context: BrowserContext | null = null;
+    let page: Page | null = null;
+    
+    try {
+        // Use global browser context
+        if (!globalBrowser) {
+            return res.status(503).json({ error: 'Browser not ready, please try again' });
+        }
+        page = await globalBrowser.newPage();
+        
+        // Navigate to the page
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(1000);
+        
+        // Try to dismiss cookie banners quickly
+        try {
+            const cookieSelectors = [
+                'button[id*="accept"]',
+                'button:has-text("Accepteren")',
+                'button:has-text("Accept")',
+            ];
+            for (const sel of cookieSelectors) {
+                const btn = await page.$(sel);
+                if (btn) {
+                    await btn.click();
+                    await page.waitForTimeout(300);
+                    break;
+                }
+            }
+        } catch (e) { /* ignore cookie errors */ }
+        
+        // Import and use price extractor
+        const { extractPrice, formatPrice } = await import('./priceExtractor');
+        const priceResult = await extractPrice(page);
+        
+        if (priceResult) {
+            console.log(`[ScanPrice] Found: ${formatPrice(priceResult.price, priceResult.currency)} (source: ${priceResult.source})`);
+            res.json({
+                success: true,
+                price: priceResult.price,
+                currency: priceResult.currency,
+                source: priceResult.source,
+                formatted: formatPrice(priceResult.price, priceResult.currency)
+            });
+        } else {
+            console.log(`[ScanPrice] No price found on ${url}`);
+            res.json({
+                success: false,
+                message: 'No price detected on this page'
+            });
+        }
+    } catch (error: any) {
+        console.error(`[ScanPrice] Error:`, error.message);
+        res.status(500).json({ error: error.message });
+    } finally {
+        if (page) await page.close().catch(() => {});
+    }
+});
+
 // Proxy endpoint - with concurrency limit to prevent blocking
 let proxyRequestsInFlight = 0;
 const MAX_CONCURRENT_PROXY = 1; // Only 1 proxy request at a time to avoid blocking scheduler

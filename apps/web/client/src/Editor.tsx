@@ -48,6 +48,8 @@ function Editor() {
   const [priceDetectionEnabled, setPriceDetectionEnabled] = useState(false);
   const [priceThresholdMin, setPriceThresholdMin] = useState<number | ''>('');
   const [priceThresholdMax, setPriceThresholdMax] = useState<number | ''>('');
+  const [priceScanResult, setPriceScanResult] = useState<{success: boolean; formatted?: string; source?: string; message?: string} | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false)
@@ -380,7 +382,7 @@ function Editor() {
              </div>
         </div>
         
-        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-400 gap-4 opacity-50 hover:opacity-100 transition-opacity duration-300">
+        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-300 gap-4">
             <div className="w-full md:w-auto">
                 {monitorType === 'text' ? (
                     <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full">
@@ -473,6 +475,53 @@ function Editor() {
                          <option value="24h">24h</option>
                          <option value="1w">1w</option>
                      </select>
+                 </div>
+
+                 {/* Price Detection Toggle */}
+                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4 relative">
+                     <label className="flex items-center gap-2 cursor-pointer">
+                         <input 
+                             type="checkbox" 
+                             checked={priceDetectionEnabled}
+                             onChange={(e) => setPriceDetectionEnabled(e.target.checked)}
+                             className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-emerald-600 focus:ring-emerald-500"
+                         />
+                         <span className="text-gray-400 text-sm whitespace-nowrap">💰 Price</span>
+                     </label>
+                     {priceDetectionEnabled && (
+                         <>
+                             <button
+                                 onClick={async () => {
+                                     if (!url) return;
+                                     setIsScanning(true);
+                                     setPriceScanResult(null);
+                                     try {
+                                         const resp = await authFetch(`${API_BASE}/api/scan-price`, {
+                                             method: 'POST',
+                                             headers: { 'Content-Type': 'application/json' },
+                                             body: JSON.stringify({ url })
+                                         });
+                                         const data = await resp.json();
+                                         setPriceScanResult(data);
+                                     } catch (e) {
+                                         setPriceScanResult({ success: false, message: 'Scan failed' });
+                                     }
+                                     setIsScanning(false);
+                                 }}
+                                 disabled={!url || isScanning}
+                                 className={`px-2 py-1 rounded text-xs font-medium ${!url || isScanning ? 'bg-gray-700 text-gray-500' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                             >
+                                 {isScanning ? '...' : '🔍'}
+                             </button>
+                             {priceScanResult && (
+                                 <span className={`text-xs whitespace-nowrap ${priceScanResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                                     {priceScanResult.success 
+                                         ? `${priceScanResult.formatted}`
+                                         : '✗'}
+                                 </span>
+                             )}
+                         </>
+                     )}
                  </div>
                   <button 
                       onClick={handleSave}

@@ -35,6 +35,11 @@ export interface Monitor {
     retry_delay?: number;
     group_id?: number;
     sort_order?: number;
+    detected_price?: number;
+    detected_currency?: string;
+    price_threshold_min?: number;
+    price_threshold_max?: number;
+    price_detection_enabled?: number;
     consecutive_failures: number;
     created_at: string;
 }

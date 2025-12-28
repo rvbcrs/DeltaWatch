@@ -45,6 +45,9 @@ function Editor() {
   const [aiOnlyVisual, setAiOnlyVisual] = useState(false);
   const [retryCount, setRetryCount] = useState(3);
   const [retryDelay, setRetryDelay] = useState(2000);
+  const [priceDetectionEnabled, setPriceDetectionEnabled] = useState(false);
+  const [priceThresholdMin, setPriceThresholdMin] = useState<number | ''>('');
+  const [priceThresholdMax, setPriceThresholdMax] = useState<number | ''>('');
 
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false)
@@ -66,6 +69,9 @@ function Editor() {
                         setAiOnlyVisual(!!monitor.ai_only_visual);
                         setRetryCount(monitor.retry_count ?? 3);
                         setRetryDelay(monitor.retry_delay ?? 2000);
+                        setPriceDetectionEnabled(!!monitor.price_detection_enabled);
+                        setPriceThresholdMin(monitor.price_threshold_min ?? '');
+                        setPriceThresholdMax(monitor.price_threshold_max ?? '');
                         
                         try {
                             if (monitor.notify_config) setNotifyConfig(JSON.parse(monitor.notify_config));
@@ -186,7 +192,10 @@ function Editor() {
                 ai_prompt: aiPrompt,
                 ai_only_visual: aiOnlyVisual ? 1 : 0,
                 retry_count: retryCount,
-                retry_delay: retryDelay
+                retry_delay: retryDelay,
+                price_detection_enabled: priceDetectionEnabled ? 1 : 0,
+                price_threshold_min: priceThresholdMin || null,
+                price_threshold_max: priceThresholdMax || null
             })
         });
         const data = await response.json();
@@ -555,6 +564,49 @@ function Editor() {
                             {t('editor.retry_desc', 'If the element is not found, retry this many times with the specified delay.')}
                         </p>
                     </div>
+                </div>
+
+                {/* Price Detection */}
+                <div className="mb-4 p-3 bg-[#0d1117] rounded border border-gray-700">
+                    <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
+                        💰 Price Detection
+                    </h3>
+                    <label className="flex items-center gap-2 cursor-pointer mb-3">
+                        <input 
+                            type="checkbox" 
+                            checked={priceDetectionEnabled}
+                            onChange={(e) => setPriceDetectionEnabled(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span className="text-sm text-gray-300">Enable automatic price detection</span>
+                    </label>
+                    {priceDetectionEnabled && (
+                        <div className="grid grid-cols-2 gap-3 mt-3">
+                            <div>
+                                <label className="text-xs text-gray-400 block mb-1">Notify when price ≤</label>
+                                <input
+                                    type="number"
+                                    placeholder="Min price"
+                                    value={priceThresholdMin}
+                                    onChange={(e) => setPriceThresholdMin(e.target.value ? Number(e.target.value) : '')}
+                                    className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs text-gray-400 block mb-1">Notify when price ≥</label>
+                                <input
+                                    type="number"
+                                    placeholder="Max price"
+                                    value={priceThresholdMax}
+                                    onChange={(e) => setPriceThresholdMax(e.target.value ? Number(e.target.value) : '')}
+                                    className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                />
+                            </div>
+                            <p className="col-span-2 text-xs text-gray-500">
+                                Automatically extracts prices from JSON-LD, Open Graph, or text patterns.
+                            </p>
+                        </div>
+                    )}
                 </div>
             </div>
         )}

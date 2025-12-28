@@ -40,6 +40,11 @@ export interface Monitor {
     history?: HistoryRecord[];
     unread_count?: number;
     suggested_selector?: string;
+    detected_price?: number;
+    detected_currency?: string;
+    price_threshold_min?: number;
+    price_threshold_max?: number;
+    price_detection_enabled?: boolean;
 }
 /**
  * Standard API response wrapper

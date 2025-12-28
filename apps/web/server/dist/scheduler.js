@@ -54,6 +54,7 @@ const db_1 = __importDefault(require("./db"));
 const notifications_1 = require("./notifications");
 const ai_1 = require("./ai");
 const logger_1 = require("./logger");
+const priceExtractor_1 = require("./priceExtractor");
 // Backend translations for email notifications
 const translations = {
     en: {
@@ -469,6 +470,43 @@ async function checkSingleMonitor(monitor, context = null) {
                 console.log(`[${monitorName}] Extracted value (${text.length} chars): "${preview}"`);
             }
         }
+        // Price Detection
+        let priceChanged = false;
+        let priceAlertTriggered = false;
+        let priceAlertMessage = '';
+        let detectedPrice = null;
+        let detectedCurrency = 'EUR';
+        if (monitor.price_detection_enabled) {
+            console.log(`[${monitorName}] Price detection enabled, extracting price...`);
+            const priceResult = await (0, priceExtractor_1.extractPrice)(page, text || undefined);
+            if (priceResult) {
+                detectedPrice = priceResult.price;
+                detectedCurrency = priceResult.currency;
+                console.log(`[${monitorName}] Detected price: ${(0, priceExtractor_1.formatPrice)(detectedPrice, detectedCurrency)} (source: ${priceResult.source})`);
+                // Check if price changed from last detected
+                if (monitor.detected_price && monitor.detected_price !== detectedPrice) {
+                    priceChanged = true;
+                    const oldPrice = (0, priceExtractor_1.formatPrice)(monitor.detected_price, detectedCurrency);
+                    const newPrice = (0, priceExtractor_1.formatPrice)(detectedPrice, detectedCurrency);
+                    const direction = detectedPrice < monitor.detected_price ? '📉 DROP' : '📈 INCREASE';
+                    console.log(`[${monitorName}] Price ${direction}: ${oldPrice} → ${newPrice}`);
+                }
+                // Check thresholds
+                if (monitor.price_threshold_min && detectedPrice <= monitor.price_threshold_min) {
+                    priceAlertTriggered = true;
+                    priceAlertMessage = `🎯 Price dropped to ${(0, priceExtractor_1.formatPrice)(detectedPrice, detectedCurrency)} (below your threshold of ${(0, priceExtractor_1.formatPrice)(monitor.price_threshold_min, detectedCurrency)})`;
+                    console.log(`[${monitorName}] ${priceAlertMessage}`);
+                }
+                if (monitor.price_threshold_max && detectedPrice >= monitor.price_threshold_max) {
+                    priceAlertTriggered = true;
+                    priceAlertMessage = `⚠️ Price rose to ${(0, priceExtractor_1.formatPrice)(detectedPrice, detectedCurrency)} (above your threshold of ${(0, priceExtractor_1.formatPrice)(monitor.price_threshold_max, detectedCurrency)})`;
+                    console.log(`[${monitorName}] ${priceAlertMessage}`);
+                }
+            }
+            else {
+                console.log(`[${monitorName}] No price detected on page`);
+            }
+        }
         const nowStr = new Date().toISOString();
         let changed = false;
         let status = 'unchanged';
@@ -541,12 +579,18 @@ async function checkSingleMonitor(monitor, context = null) {
                 console.log(`[${monitorName}] AI detected meaningful text change`);
             }
         }
-        if (textChange || visualChange) {
+        if (textChange || visualChange || priceChanged || priceAlertTriggered) {
             let changeMsg = "";
             if (textChange)
                 changeMsg += "Text Content Changed. ";
             if (visualChange)
                 changeMsg += "Visual Appearance Changed. ";
+            if (priceAlertTriggered)
+                changeMsg += priceAlertMessage + " ";
+            else if (priceChanged && detectedPrice && monitor.detected_price) {
+                const direction = detectedPrice < monitor.detected_price ? '📉' : '📈';
+                changeMsg += `${direction} Price: ${(0, priceExtractor_1.formatPrice)(monitor.detected_price, detectedCurrency)} → ${(0, priceExtractor_1.formatPrice)(detectedPrice, detectedCurrency)}. `;
+            }
             const isFirstRun = !monitor.last_check;
             if (!isFirstRun) {
                 changed = true;
@@ -809,11 +853,11 @@ async function checkSingleMonitor(monitor, context = null) {
         }
         if (changed) {
             if (monitor.type === 'visual') {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, screenshotPath, nowStr, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_screenshot = ?, last_change = ?, detected_price = ?, detected_currency = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, screenshotPath, nowStr, detectedPrice, detectedCurrency, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
             }
             else {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_change = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, nowStr, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, last_change = ?, detected_price = ?, detected_currency = ?, unread_count = unread_count + 1, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, nowStr, detectedPrice, detectedCurrency, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
                 fs_1.default.unlink(screenshotPath, (delErr) => { if (delErr)
                     console.error("Error deleting unused screenshot:", delErr); });
@@ -822,12 +866,12 @@ async function checkSingleMonitor(monitor, context = null) {
         else {
             // No change detected (or first run)
             if (monitor.type === 'visual') {
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_screenshot = ?, last_value = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, screenshotPath, text, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_screenshot = ?, last_value = ?, detected_price = ?, detected_currency = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, screenshotPath, text, detectedPrice, detectedCurrency, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
             }
             else {
                 // For text monitors, always update last_value (needed for first run baseline)
-                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, monitor.id], (err) => { if (err)
+                db_1.default.run(`UPDATE monitors SET last_check = ?, last_value = ?, detected_price = ?, detected_currency = ?, consecutive_failures = 0 WHERE id = ?`, [nowStr, text, detectedPrice, detectedCurrency, monitor.id], (err) => { if (err)
                     console.error("Update Error:", err); });
                 fs_1.default.unlink(screenshotPath, (delErr) => { if (delErr)
                     console.error("Error deleting unused screenshot:", delErr); });

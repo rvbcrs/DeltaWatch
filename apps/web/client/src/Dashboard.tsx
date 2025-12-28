@@ -372,6 +372,11 @@ const Dashboard = () => {
                         <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border bg-red-500/20 text-red-300 border-red-500/30">
                             {monitor.interval}
                         </span>
+                        {monitor.detected_price && monitor.detected_price > 0 && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border bg-emerald-900/30 text-emerald-400 border-emerald-900 flex items-center gap-1">
+                                💰 {new Intl.NumberFormat('nl-NL', { style: 'currency', currency: monitor.detected_currency || 'EUR' }).format(monitor.detected_price)}
+                            </span>
+                        )}
                         {monitor.history && monitor.history.length > 0 && (() => {
                             const historyWithStatus = monitor.history.filter(h => h.http_status !== null);
                             if (historyWithStatus.length === 0) return null;

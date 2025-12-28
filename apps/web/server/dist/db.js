@@ -163,6 +163,32 @@ function initDb() {
                     console.log('Migrating: Adding sort_order column to monitors table...');
                     db.run("ALTER TABLE monitors ADD COLUMN sort_order INTEGER DEFAULT 0");
                 }
+                // Price detection columns
+                const hasDetectedPrice = rows.some(r => r.name === 'detected_price');
+                if (!hasDetectedPrice) {
+                    console.log('Migrating: Adding detected_price column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN detected_price REAL");
+                }
+                const hasDetectedCurrency = rows.some(r => r.name === 'detected_currency');
+                if (!hasDetectedCurrency) {
+                    console.log('Migrating: Adding detected_currency column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN detected_currency TEXT DEFAULT 'EUR'");
+                }
+                const hasPriceThresholdMin = rows.some(r => r.name === 'price_threshold_min');
+                if (!hasPriceThresholdMin) {
+                    console.log('Migrating: Adding price_threshold_min column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN price_threshold_min REAL");
+                }
+                const hasPriceThresholdMax = rows.some(r => r.name === 'price_threshold_max');
+                if (!hasPriceThresholdMax) {
+                    console.log('Migrating: Adding price_threshold_max column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN price_threshold_max REAL");
+                }
+                const hasPriceDetectionEnabled = rows.some(r => r.name === 'price_detection_enabled');
+                if (!hasPriceDetectionEnabled) {
+                    console.log('Migrating: Adding price_detection_enabled column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN price_detection_enabled INTEGER DEFAULT 0");
+                }
             }
             else {
                 console.error("Error checking table info:", err);

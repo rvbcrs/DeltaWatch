@@ -171,7 +171,7 @@ function Editor() {
 
   const handleSave = async () => {
     if (!url) return;
-    if (monitorType === 'text' && !selectedElement) {
+    if (monitorType === 'text' && !selectedElement && !priceDetectionEnabled) {
         showToast(t('editor.toasts.select_element'), 'error');
         return;
     }
@@ -489,44 +489,69 @@ function Editor() {
                          <span className="text-gray-400 text-sm whitespace-nowrap">💰 Price</span>
                      </label>
                      {priceDetectionEnabled && (
-                         <>
+                         <div className="flex gap-1 items-center">
+                             <input
+                                 type="number"
+                                 placeholder="Min"
+                                 value={priceThresholdMin}
+                                 onChange={(e) => setPriceThresholdMin(e.target.value ? Number(e.target.value) : '')}
+                                 className="w-14 bg-[#0d1117] border border-gray-700 text-white rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                 title="Alert when price drops below this"
+                             />
+                             <input
+                                 type="number"
+                                 placeholder="Max"
+                                 value={priceThresholdMax}
+                                 onChange={(e) => setPriceThresholdMax(e.target.value ? Number(e.target.value) : '')}
+                                 className="w-14 bg-[#0d1117] border border-gray-700 text-white rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                 title="Alert when price rises above this"
+                             />
                              <button
                                  onClick={async () => {
+                                     console.log('[ScanPrice] Button clicked, url:', url);
                                      if (!url) return;
                                      setIsScanning(true);
                                      setPriceScanResult(null);
                                      try {
+                                         console.log('[ScanPrice] Sending request...');
                                          const resp = await authFetch(`${API_BASE}/api/scan-price`, {
                                              method: 'POST',
                                              headers: { 'Content-Type': 'application/json' },
                                              body: JSON.stringify({ url })
                                          });
+                                         console.log('[ScanPrice] Response status:', resp.status);
                                          const data = await resp.json();
+                                         console.log('[ScanPrice] Response data:', data);
                                          setPriceScanResult(data);
-                                     } catch (e) {
-                                         setPriceScanResult({ success: false, message: 'Scan failed' });
+                                     } catch (e: any) {
+                                         console.log('[ScanPrice] Error:', e);
+                                         setPriceScanResult({ success: false, message: e.message || 'Network error' });
                                      }
                                      setIsScanning(false);
                                  }}
                                  disabled={!url || isScanning}
                                  className={`px-2 py-1 rounded text-xs font-medium ${!url || isScanning ? 'bg-gray-700 text-gray-500' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                                 title="Scan page for price"
                              >
                                  {isScanning ? '...' : '🔍'}
                              </button>
                              {priceScanResult && (
-                                 <span className={`text-xs whitespace-nowrap ${priceScanResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                                 <span 
+                                     className={`text-xs whitespace-nowrap ${priceScanResult.success ? 'text-emerald-400' : 'text-red-400'}`}
+                                     title={priceScanResult.success ? `Source: ${priceScanResult.source}` : priceScanResult.message}
+                                 >
                                      {priceScanResult.success 
                                          ? `${priceScanResult.formatted}`
-                                         : '✗'}
+                                         : `✗ ${priceScanResult.message || 'No price'}`}
                                  </span>
                              )}
-                         </>
+                         </div>
                      )}
                  </div>
                   <button 
                       onClick={handleSave}
-                      disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement)}
-                      className={`px-6 py-1 rounded transition font-medium w-32 justify-center flex ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-500'}`}
+                      disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)}
+                      className={`px-6 py-1 rounded transition font-medium w-32 justify-center flex ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-500'}`}
                   >
                       {t('editor.save')}
                   </button>

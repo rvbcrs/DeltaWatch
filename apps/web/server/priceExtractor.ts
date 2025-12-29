@@ -78,6 +78,108 @@ function parsePrice(priceStr: string): { price: number; currency: string } | nul
 }
 
 /**
+ * Collect all valid price candidates from an offer object, recursively checking nested offers
+ */
+function collectPriceCandidates(offer: any, depth = 0): { priority: number, result: ExtractedPrice }[] {
+    if (depth > 5) return []; // Prevent infinite recursion
+    
+    const candidates: { priority: number, result: ExtractedPrice }[] = [];
+
+    // Log the offer we are inspecting
+    console.log(`[PriceExtractor] Inspecting offer (depth ${depth}, type: ${offer['@type']}): price=${offer.price}, lowPrice=${offer.lowPrice}`);
+
+    // 1. Check standard price field (Highest Priority)
+    if (offer.price !== undefined && offer.price !== null) {
+        const priceNum = typeof offer.price === 'string' 
+            ? parseFloat(offer.price) 
+            : offer.price;
+        if (!isNaN(priceNum) && priceNum > 0) {
+            candidates.push({
+                priority: 1, // Highest priority
+                result: {
+                    price: priceNum,
+                    currency: offer.priceCurrency || 'EUR',
+                    source: 'json-ld',
+                    raw: `${offer.priceCurrency || '€'}${offer.price}`
+                }
+            });
+        }
+    }
+    
+    // 2. Check priceSpecification
+    if (offer.priceSpecification) {
+        const spec = Array.isArray(offer.priceSpecification) 
+            ? offer.priceSpecification[0] 
+            : offer.priceSpecification;
+        if (spec?.price) {
+            const priceNum = typeof spec.price === 'string' 
+                ? parseFloat(spec.price) 
+                : spec.price;
+            if (!isNaN(priceNum) && priceNum > 0) {
+                candidates.push({
+                    priority: 2, // Second highest
+                    result: {
+                        price: priceNum,
+                        currency: spec.priceCurrency || offer.priceCurrency || 'EUR',
+                        source: 'json-ld',
+                        raw: `${spec.priceCurrency || '€'}${spec.price}`
+                    }
+                });
+            }
+        }
+    }
+    
+    // 3. Check AggregateOffer
+    if (offer['@type'] === 'AggregateOffer' || offer.lowPrice) {
+        // Try highPrice (if high=low)
+        if (offer.highPrice !== undefined && offer.highPrice === offer.lowPrice) {
+            const priceNum = typeof offer.highPrice === 'string' 
+                ? parseFloat(offer.highPrice) 
+                : offer.highPrice;
+            if (!isNaN(priceNum) && priceNum > 0) {
+                    candidates.push({
+                    priority: 3,
+                    result: {
+                        price: priceNum,
+                        currency: offer.priceCurrency || 'EUR',
+                        source: 'json-ld',
+                        raw: `${offer.priceCurrency || '€'}${offer.highPrice}`
+                    }
+                });
+            }
+        }
+        
+        // LowPrice (Last resort for Product, but okay)
+        if (offer.lowPrice !== undefined) {
+            const priceNum = typeof offer.lowPrice === 'string' 
+                ? parseFloat(offer.lowPrice) 
+                : offer.lowPrice;
+            if (!isNaN(priceNum) && priceNum > 0) {
+                candidates.push({
+                    priority: 4, // Lowest priority for JSON-LD
+                    result: {
+                        price: priceNum,
+                        currency: offer.priceCurrency || 'EUR',
+                        source: 'json-ld',
+                        raw: `${offer.priceCurrency || '€'}${offer.lowPrice}`
+                    }
+                });
+            }
+        }
+    }
+
+    // 4. Recurse into nested offers
+    if (offer.offers) {
+        const nested = Array.isArray(offer.offers) ? offer.offers : [offer.offers];
+        for (const nestedOffer of nested) {
+            candidates.push(...collectPriceCandidates(nestedOffer, depth + 1));
+        }
+    }
+
+    return candidates;
+}
+
+/**
  * Extract price from JSON-LD structured data
  */
 async function extractFromJsonLd(page: Page): Promise<ExtractedPrice | null> {
@@ -96,31 +198,45 @@ async function extractFromJsonLd(page: Page): Promise<ExtractedPrice | null> {
             return results;
         });
         
+        console.log(`[PriceExtractor] Found ${jsonLdData.length} JSON-LD blocks`);
+        
         for (const data of jsonLdData) {
             // Handle arrays
             const items = Array.isArray(data) ? data : [data];
             
             for (const item of items) {
-                // Look for Product type
-                if (item['@type'] === 'Product' || item['@type']?.includes?.('Product')) {
+                console.log(`[PriceExtractor] JSON-LD item @type: ${item['@type']}`);
+                
+                // Determine if this is a Product or ProductGroup
+                const isProduct = item['@type'] === 'Product';
+                const isProductGroup = item['@type'] === 'ProductGroup';
+                const isProductType = isProduct || isProductGroup || item['@type']?.includes?.('Product');
+                
+                if (isProductType) {
+                    console.log(`[PriceExtractor] Processing ${item['@type']}, name: "${item.name?.substring(0, 50)}..."`);
+                    
                     const offers = item.offers;
                     if (offers) {
                         // Handle single offer or array of offers
                         const offerList = Array.isArray(offers) ? offers : [offers];
+                        
+                        // For logging, show what we found
+                        console.log(`[PriceExtractor] Found ${offerList.length} offer(s)`);
+                        
+                        // Collect all valid price candidates
+                        const candidates: { priority: number, result: ExtractedPrice }[] = [];
+
                         for (const offer of offerList) {
-                            if (offer.price) {
-                                const priceNum = typeof offer.price === 'string' 
-                                    ? parseFloat(offer.price) 
-                                    : offer.price;
-                                if (!isNaN(priceNum) && priceNum > 0) {
-                                    return {
-                                        price: priceNum,
-                                        currency: offer.priceCurrency || 'EUR',
-                                        source: 'json-ld',
-                                        raw: `${offer.priceCurrency || '€'}${offer.price}`
-                                    };
-                                }
-                            }
+                            candidates.push(...collectPriceCandidates(offer));
+                        }
+
+                        // Select best candidate if any found
+                        if (candidates.length > 0) {
+                            // Sort by priority (asc)
+                            candidates.sort((a, b) => a.priority - b.priority);
+                            const best = candidates[0];
+                            console.log(`[PriceExtractor] best candidate selected (priority ${best.priority}):`, best.result.price);
+                            return best.result;
                         }
                     }
                 }
@@ -229,6 +345,82 @@ async function extractFromMicrodata(page: Page): Promise<ExtractedPrice | null> 
 }
 
 /**
+ * Extract price from common DOM selectors (Amazon, Bol.com, etc.)
+ */
+async function extractFromDomSelectors(page: Page): Promise<ExtractedPrice | null> {
+    try {
+        // Log all potential price elements to help debug
+        const debugInfo = await page.evaluate(() => {
+            const results: Array<{selector: string; text: string | null}> = [];
+            
+            // Ordered by specificity - most reliable first
+            const selectors = [
+                // Amazon - very specific selectors
+                '#corePrice_feature_div .a-price .a-offscreen',
+                '.priceToPay .a-offscreen',
+                '.a-price[data-a-size="xl"] .a-offscreen',
+                '.a-price[data-a-size="l"] .a-offscreen',
+                '.a-price[data-a-color="base"] .a-offscreen',
+                '.a-price .a-offscreen',
+                '#priceblock_ourprice',
+                '#priceblock_dealprice',
+                '#priceblock_saleprice',
+                '[data-a-color="price"] .a-offscreen',
+                '#apex_offerDisplay_desktop .a-offscreen',
+                '.apexPriceToPay .a-offscreen',
+                // Amazon NL/DE specific
+                '#price_inside_buybox',
+                '#newBuyBoxPrice',
+                '#buybox .a-price .a-offscreen',
+                // Bol.com
+                '.promo-price',
+                '.buy-block__price',
+                '[data-test="price"]',
+                // Other e-commerce
+                '.product-price',
+                '.price-value',
+                '[itemprop="price"]',
+                '[data-price]',
+            ];
+            
+            for (const sel of selectors) {
+                try {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const text = el.textContent?.trim() || el.getAttribute('content') || el.getAttribute('data-price');
+                        results.push({ selector: sel, text });
+                    }
+                } catch (e) {}
+            }
+            
+            return results;
+        });
+        
+        console.log('[PriceExtractor] DOM selector scan results:', JSON.stringify(debugInfo, null, 2));
+        
+        // Try to parse prices from found elements
+        for (const info of debugInfo) {
+            if (info.text && /[\d]/.test(info.text)) {
+                const parsed = parsePrice(info.text);
+                if (parsed && parsed.price > 0) {
+                    console.log(`[PriceExtractor] Found via DOM selector "${info.selector}":`, info.text, '-> parsed:', parsed);
+                    return {
+                        price: parsed.price,
+                        currency: parsed.currency,
+                        source: 'text-pattern',
+                        raw: info.text
+                    };
+                }
+            }
+        }
+    } catch (e) {
+        console.log('[PriceExtractor] DOM selector extraction failed:', e);
+    }
+    
+    return null;
+}
+
+/**
  * Extract price from text content using patterns
  * This is a fallback when structured data is not available
  */
@@ -295,7 +487,14 @@ export async function extractPrice(page: Page, elementText?: string): Promise<Ex
         return result;
     }
     
-    // 4. Try text pattern matching on element text
+    // 4. Try common DOM selectors (Amazon, Bol.com, etc.)
+    result = await extractFromDomSelectors(page);
+    if (result) {
+        console.log(`[PriceExtractor] Found via DOM selectors: ${result.currency} ${result.price}`);
+        return result;
+    }
+    
+    // 5. Try text pattern matching on element text
     if (elementText) {
         result = extractFromText(elementText);
         if (result) {

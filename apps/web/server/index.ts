@@ -629,9 +629,11 @@ app.post('/preview-scenario', async (req: Request, res: Response) => {
 
 // Scan page for price endpoint
 app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+    console.log(`[ScanPrice] Endpoint hit by user ${req.user?.userId}`);
     const { url } = req.body;
     
     if (!url) {
+        console.log('[ScanPrice] Error: Missing URL');
         return res.status(400).json({ error: 'Missing URL' });
     }
     
@@ -649,7 +651,7 @@ app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res
         
         // Navigate to the page
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(2000); // Wait longer for dynamic content to load
         
         // Try to dismiss cookie banners quickly
         try {
@@ -670,7 +672,24 @@ app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res
         
         // Import and use price extractor
         const { extractPrice, formatPrice } = await import('./priceExtractor');
+        
+        // Always get debug info
+        const pageTitle = await page.title();
+        const hasJsonLd = await page.evaluate(() => document.querySelectorAll('script[type="application/ld+json"]').length);
+        const jsonLdContent = await page.evaluate(() => {
+            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+            const results: string[] = [];
+            scripts.forEach(s => results.push(s.textContent?.substring(0, 500) || ''));
+            return results;
+        });
+        
+        console.log(`[ScanPrice] Page loaded: title="${pageTitle}", JSON-LD scripts=${hasJsonLd}`);
+        if (hasJsonLd > 0) {
+            console.log(`[ScanPrice] JSON-LD sample:`, jsonLdContent[0]?.substring(0, 200));
+        }
+        
         const priceResult = await extractPrice(page);
+        console.log(`[ScanPrice] extractPrice returned:`, priceResult);
         
         if (priceResult) {
             console.log(`[ScanPrice] Found: ${formatPrice(priceResult.price, priceResult.currency)} (source: ${priceResult.source})`);
@@ -679,13 +698,15 @@ app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res
                 price: priceResult.price,
                 currency: priceResult.currency,
                 source: priceResult.source,
-                formatted: formatPrice(priceResult.price, priceResult.currency)
+                formatted: formatPrice(priceResult.price, priceResult.currency),
+                debug: { pageTitle, jsonLdScripts: hasJsonLd }
             });
         } else {
             console.log(`[ScanPrice] No price found on ${url}`);
             res.json({
                 success: false,
-                message: 'No price detected on this page'
+                message: 'No price detected on this page',
+                debug: { pageTitle, jsonLdScripts: hasJsonLd, jsonLdSample: jsonLdContent[0]?.substring(0, 300) }
             });
         }
     } catch (error: any) {

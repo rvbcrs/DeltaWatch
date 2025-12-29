@@ -59,6 +59,9 @@ interface Monitor {
     group_id?: number;
     history?: Array<HistoryRecord & { http_status: number | null }>;
     unread_count?: number;
+    price_detection_enabled?: boolean;
+    detected_price?: number;
+    detected_currency?: string;
 }
 
 const TimeAgo = ({ date }: { date: string | null | undefined }) => {
@@ -364,10 +367,11 @@ const Dashboard = () => {
                  <div className="min-w-0 flex flex-col gap-1 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                         <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border ${
-                            monitor.type === 'visual' ? 'bg-blue-900/30 text-blue-400 border-blue-900' : 
-                            (monitor.selector === 'body' ? 'bg-purple-900/30 text-purple-400 border-purple-900' : 'bg-green-900/30 text-green-400 border-green-900')
+                            monitor.price_detection_enabled ? 'bg-emerald-900/30 text-emerald-400 border-emerald-900' :
+                            (monitor.type === 'visual' ? 'bg-blue-900/30 text-blue-400 border-blue-900' : 
+                            (monitor.selector === 'body' ? 'bg-purple-900/30 text-purple-400 border-purple-900' : 'bg-green-900/30 text-green-400 border-green-900'))
                         }`}>
-                            {monitor.type === 'visual' ? 'VISUAL' : (monitor.selector === 'body' ? 'FULL PAGE' : 'TEXT')}
+                            {monitor.price_detection_enabled ? 'PRICE' : (monitor.type === 'visual' ? 'VISUAL' : (monitor.selector === 'body' ? 'FULL PAGE' : 'TEXT'))}
                         </span>
                         <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border bg-red-500/20 text-red-300 border-red-500/30">
                             {monitor.interval}

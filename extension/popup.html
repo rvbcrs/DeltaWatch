@@ -186,9 +186,45 @@
       </div>
 
       <div class="buttons">
-        <button id="pick-btn" style="padding: 10px;">🎯 Pick Element</button>
-        <button id="auto-detect-btn" style="background-color: #8b5cf6; padding: 10px;" title="Let AI find the best monitor config">✨ Auto-Detect</button>
+        <button id="pick-btn" style="padding: 10px;">🎯 Pick (Text or Price)</button>
+        <div style="display: flex; gap: 8px;">
+            <button id="detect-price-btn" style="background-color: #d97706; padding: 10px; flex: 1;" title="Auto-detect price on page">💰 Find Price</button>
+            <button id="auto-detect-btn" style="background-color: #8b5cf6; padding: 10px; flex: 1;" title="Let AI find the best monitor config">✨ AI Auto</button>
+        </div>
     </div>
+  </div>
+
+  <!-- Result Confirmation Section -->
+  <div id="result-section" style="display: none;">
+      <div class="input-group">
+          <label for="monitor-name-input">Monitor Name</label>
+          <input type="text" id="monitor-name-input">
+      </div>
+
+      <div class="input-group">
+          <label for="monitor-interval-select">Check Frequency</label>
+          <select id="monitor-interval-select" style="width: 100%; padding: 8px; background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 13px;">
+              <option value="1m">1 Minute</option>
+              <option value="5m">5 Minutes</option>
+              <option value="15m">15 Minutes</option>
+              <option value="30m">30 Minutes</option>
+              <option value="1h" selected>1 Hour</option>
+              <option value="6h">6 Hours</option>
+              <option value="12h">12 Hours</option>
+              <option value="24h">24 Hours</option>
+              <option value="1w">1 Week</option>
+          </select>
+      </div>
+
+      <div style="text-align: center; margin-bottom: 16px;">
+          <h3 style="margin: 0 0 8px 0; color: #8b949e; font-size: 12px;">Detected Price</h3>
+          <div id="result-value" style="background: #161b22; padding: 12px; border: 1px solid #30363d; border-radius: 6px; font-size: 18px; font-weight: bold; color: #58a6ff;"></div>
+      </div>
+      
+      <div class="buttons">
+        <button id="confirm-add-btn" style="background-color: #238636;">✅ Add Monitor</button>
+        <button id="cancel-btn" class="secondary">Cancel</button>
+      </div>
   </div>
 
   <div id="status" class="status"></div>

@@ -48,7 +48,14 @@ function Editor() {
   const [priceDetectionEnabled, setPriceDetectionEnabled] = useState(false);
   const [priceThresholdMin, setPriceThresholdMin] = useState<number | ''>('');
   const [priceThresholdMax, setPriceThresholdMax] = useState<number | ''>('');
-  const [priceScanResult, setPriceScanResult] = useState<{success: boolean; formatted?: string; source?: string; message?: string} | null>(null);
+  const [priceScanResult, setPriceScanResult] = useState<{
+      success: boolean; 
+      formatted?: string; 
+      source?: string; 
+      message?: string; 
+      price?: number; 
+      currency?: string;
+  } | null>(null);
   const [isScanning, setIsScanning] = useState(false);
 
   const [searchParams] = useSearchParams();
@@ -150,6 +157,21 @@ function Editor() {
         if (paramSelector) {
             setSelectedElement({ selector: paramSelector, text: t('editor.toasts.auto_detected') });
         }
+        
+        const paramPrice = searchParams.get('price');
+        const paramCurrency = searchParams.get('currency');
+        const paramFormatted = searchParams.get('formatted');
+
+        if (paramType === 'price' && paramPrice) {
+             setPriceScanResult({
+                 success: true,
+                 price: parseFloat(paramPrice),
+                 currency: paramCurrency || 'EUR',
+                 formatted: paramFormatted || `${paramCurrency || '€'} ${paramPrice}`,
+                 source: 'extension'
+             });
+             setPriceDetectionEnabled(true);
+        }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, searchParams])
@@ -242,6 +264,18 @@ function Editor() {
   const handleGo = async () => {
     if (!url) return;
     setIsLoading(true);
+    
+    // Safety timeout: stop loading after 15s if iframe hangs
+    setTimeout(() => {
+        setIsLoading(prev => {
+            if (prev) {
+                showToast(t('editor.toasts.timeout_warning', 'Page load took too long, but we are showing what we got.'), 'info');
+                return false;
+            }
+            return prev;
+        });
+    }, 15000);
+
     const target = `${API_BASE}/proxy?url=${encodeURIComponent(url)}`;
     setProxyUrl(target);
   }
@@ -331,7 +365,7 @@ function Editor() {
   const handleScanPrice = async () => {
     if (!url) return;
     setIsScanning(true);
-    setPriceScanResult(null);
+    setPriceScanResult(null); // Clear previous result
     try {
         const res = await authFetch(`${API_BASE}/api/scan-price`, {
             method: 'POST',
@@ -339,8 +373,11 @@ function Editor() {
             body: JSON.stringify({ url })
         });
         const data = await res.json();
+        
+        // Always set result to show feedback in sidebar
+        setPriceScanResult(data);
+        
         if (data.success && data.price !== null) {
-            setPriceScanResult(data);
             showToast(t('editor.toasts.price_detected', { price: `${data.currency} ${data.price}` }), "success");
         } else {
             showToast(t('editor.toasts.price_not_found'), "error");
@@ -348,6 +385,8 @@ function Editor() {
     } catch (e) {
         console.error("Price scan failed", e);
         showToast(t('editor.toasts.price_scan_error'), "error");
+        // Show error in sidebar too
+        setPriceScanResult({ success: false, message: "Scan failed: Network error" });
     } finally {
         setIsScanning(false);
     }
@@ -623,7 +662,35 @@ function Editor() {
                             </div>
                             <div className="mb-4">
                                 <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">{t('editor.current_text')}</h3>
-                                <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200 h-24 overflow-y-auto">{selectedElement.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
+                                <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200 h-24 overflow-y-auto font-mono text-xs">{selectedElement.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
+                            </div>
+
+                            {/* DOM Hierarchy */}
+                            <div className="mb-4">
+                                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{t('editor.hierarchy', 'Hierarchy')}</h3>
+                                <div className="flex flex-wrap gap-1 bg-[#0d1117] p-2 rounded border border-gray-700">
+                                    {selectedElement.selector.split('>').map((segment, index, array) => (
+                                        <div key={index} className="flex items-center">
+                                            {index > 0 && <span className="text-gray-600 mx-1">›</span>}
+                                            <button
+                                                onClick={() => {
+                                                    const newSelector = array.slice(0, index + 1).join('>').trim();
+                                                    setSelectedElement({ ...selectedElement, selector: newSelector });
+                                                    // Trigger highlight update in iframe
+                                                    const iframe = document.querySelector('iframe');
+                                                    iframe?.contentWindow?.postMessage({
+                                                        type: 'highlight',
+                                                        payload: newSelector
+                                                    }, '*');
+                                                }}
+                                                className="px-1.5 py-0.5 rounded text-xs text-blue-400 hover:bg-blue-900/30 hover:text-blue-300 transition-colors border border-transparent hover:border-blue-800"
+                                                title={segment.trim()}
+                                            >
+                                                {segment.trim().replace(/\[.*?\]/g, '').replace(/\:nth-of-type\(\d+\)/g, '') || segment.trim()}
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                             
                             <hr className="border-gray-800 my-4" />

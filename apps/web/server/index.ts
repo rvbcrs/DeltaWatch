@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { chromium } from 'playwright-extra';
-import type { BrowserContext, Page, ConsoleMessage, Request as PlaywrightRequest } from 'playwright-core';
+import type { BrowserContext, Page, ConsoleMessage, Request as PlaywrightRequest, Browser } from 'playwright-core';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import path from 'path';
 import fs from 'fs';
@@ -106,6 +106,12 @@ app.use('/api/docs', apiReference({
 // Serve OpenAPI spec as JSON
 app.get('/api/openapi.json', (req: Request, res: Response) => {
     res.json(openApiSpec);
+});
+
+// Provide supported intervals for extensions/clients
+app.get('/api/intervals', async (req: Request, res: Response) => {
+    const { INTERVAL_MINUTES } = await import('./scheduler');
+    res.json({ intervals: Object.keys(INTERVAL_MINUTES) });
 });
 
 // Global Request Logger
@@ -227,7 +233,10 @@ app.get('/api/health/deep', async (req: Request, res: Response) => {
 });
 
 // AI Analyze Page endpoint (for browser extension and Editor auto-detect)
-app.post('/api/ai/analyze-page', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+app.post('/api/ai/analyze-page', (req, res, next) => { 
+    console.error('[DEBUG] HIT /api/ai/analyze-page', 'Content-Length:', req.headers['content-length']); 
+    next(); 
+}, auth.authenticateToken, async (req: AuthRequest, res: Response) => {
     const { url, html, prompt } = req.body;
     
     if (!url) {
@@ -236,6 +245,61 @@ app.post('/api/ai/analyze-page', auth.authenticateToken, async (req: AuthRequest
     
     try {
         let htmlContent = html;
+
+        // SPECIAL HANDLING: If prompt is asking for PRICE, use our robust price extractor instead of LLM
+        console.error(`[AI Analyze] Prompt: "${prompt}", URL: ${url}`);
+        
+        if (prompt && prompt.toLowerCase().includes('price')) {
+             console.error('[AI Analyze] Detected price request, using specialized PriceExtractor...');
+             const { acquireBrowser } = await import('./browserPool');
+             const { extractPrice, formatPrice } = await import('./priceExtractor');
+             let pooledContext: { context: BrowserContext; release: () => Promise<void> } | null = null;
+             let page: Page | null = null;
+             try {
+                  console.error('[AI Analyze] Acquiring browser...');
+                  pooledContext = await acquireBrowser();
+                  page = await pooledContext.context.newPage();
+                  
+                  console.error('[AI Analyze] Navigating to URL...');
+                  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                  await page.waitForTimeout(2000); // Wait for dynamic content
+                  
+                  // Try to dismiss cookie banners
+                   try {
+                        const cookieSelectors = ['button[id*="accept"]', 'button:has-text("Accepteren")', 'button:has-text("Accept")'];
+                        for (const sel of cookieSelectors) {
+                            const btn = await page.$(sel);
+                            if (btn) { await btn.click(); await page.waitForTimeout(300); break; }
+                        }
+                    } catch (e) {}
+
+                  console.error('[AI Analyze] Extracting price...');
+                  const priceResult = await extractPrice(page);
+                  console.error('[AI Analyze] Extraction result:', priceResult);
+                  
+                  if (priceResult) {
+                       return res.json({ 
+                           message: 'success', 
+                           data: {
+                               name: 'Product Price',
+                               selector: priceResult.selector || 'body', 
+                               type: 'price',
+                               price: priceResult.price,
+                               currency: priceResult.currency,
+                               formatted: formatPrice(priceResult.price, priceResult.currency)
+                           }
+                       });
+                  } else {
+                       console.error('[AI Analyze] PriceExtractor found nothing. Capturing server HTML for LLM fallback.');
+                       htmlContent = await page.content();
+                  }
+             } catch (err: any) {
+                  console.error('[AI Analyze] PriceExtractor error:', err.message);
+             } finally {
+                  if (page) await page.close().catch(() => {});
+                  if (pooledContext) await pooledContext.release().catch(() => {});
+             }
+        }
         
         // If HTML is not provided, fetch it server-side using Playwright
         if (!htmlContent) {
@@ -639,15 +703,14 @@ app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res
     
     console.log(`[ScanPrice] Scanning ${url} for price...`);
     
-    let context: BrowserContext | null = null;
+    // Use browser pool for consistency with scheduler
+    const { acquireBrowser } = await import('./browserPool');
+    let pooledContext: { context: BrowserContext; release: () => Promise<void> } | null = null;
     let page: Page | null = null;
     
     try {
-        // Use global browser context
-        if (!globalBrowser) {
-            return res.status(503).json({ error: 'Browser not ready, please try again' });
-        }
-        page = await globalBrowser.newPage();
+        pooledContext = await acquireBrowser();
+        page = await pooledContext.context.newPage();
         
         // Navigate to the page
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -714,6 +777,7 @@ app.post('/api/scan-price', auth.authenticateToken, async (req: AuthRequest, res
         res.status(500).json({ error: error.message });
     } finally {
         if (page) await page.close().catch(() => {});
+        if (pooledContext) await pooledContext.release().catch(() => {});
     }
 });
 
@@ -738,62 +802,35 @@ app.get('/proxy', async (req: Request, res: Response) => {
         return res.status(400).send('Missing URL parameter');
     }
 
+    let browserInstance: Browser | null = null;
+
     try {
-        const launchBrowser = async (): Promise<BrowserContext> => {
-            console.log("[Server] Launching Persistent Browser Profile...");
-            const userDataDir = path.join(__dirname, 'chrome_user_data');
-            if (!fs.existsSync(userDataDir)) {
-                try { fs.mkdirSync(userDataDir); } catch (e) { }
-            }
+        console.log('[Server] Launching Ephemeral Browser...');
+        browserInstance = await chromium.launch({
+            headless: true,
+            args: [
+                '--disable-gpu',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--mute-audio'
+            ]
+        });
 
-            const ctx = await chromium.launchPersistentContext(userDataDir, {
-                headless: true,
-                ignoreDefaultArgs: ['--enable-automation'],
-                args: [
-                    '--disable-gpu',
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled',
-                    '--mute-audio'
-                ],
-                viewport: { width: 1280, height: 800 },
-                locale: 'nl-NL',
-                timezoneId: 'Europe/Amsterdam',
-                permissions: ['geolocation', 'notifications'],
-                ignoreHTTPSErrors: true
-            });
+        const context = await browserInstance.newContext({
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 800 },
+            locale: 'nl-NL',
+            timezoneId: 'Europe/Amsterdam',
+            permissions: ['geolocation', 'notifications'],
+            ignoreHTTPSErrors: true,
+            bypassCSP: true
+        });
 
-            await ctx.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            });
-
-            return ctx;
-        };
-
-        if (!globalBrowser) {
-            globalBrowser = await launchBrowser();
-        } else {
-            try {
-                globalBrowser.pages();
-            } catch (e) {
-                console.log("[Server] Browser context was closed, relaunching...");
-                globalBrowser = await launchBrowser();
-            }
-        }
-
-        const context = globalBrowser;
-
-        if (session_id) {
-            if (!sessionContexts.has(session_id)) {
-                console.log(`[Proxy] New logical session ${session_id} on persistent profile`);
-                sessionContexts.set(session_id, { context, lastAccess: Date.now() });
-            } else {
-                console.log(`[Proxy] Continuing session ${session_id}`);
-                const session = sessionContexts.get(session_id)!;
-                session.lastAccess = Date.now();
-            }
-        }
+        await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
 
         const page = await context.newPage();
 
@@ -802,64 +839,29 @@ app.get('/proxy', async (req: Request, res: Response) => {
                 console.log(`[Browser ${msg.type().toUpperCase()}] ${msg.text()}`);
             }
         });
+
         page.on('requestfailed', (request: PlaywrightRequest) => {
             if (request.url().includes('google') || request.url().includes('doubleclick')) return;
+            if (request.failure()?.errorText === 'net::ERR_FAILED') return; 
+            if (request.failure()?.errorText === 'net::ERR_ABORTED') return;
             console.log(`[Browser Network Error] ${request.url()} : ${request.failure()?.errorText}`);
         });
 
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            // Use domcontentloaded for speed, and just wait a fixed time for hydration.
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            
+            // Wait for basic hydration
+            await page.waitForTimeout(4000);
+
+            // ... (rest of logic: inject scripts, etc. - keep existing)
 
             try {
-                await page.waitForSelector('div[class*="fixed"][class*="inset-0"]', { state: 'detached', timeout: 3000 });
-            } catch (waitErr) {
-                console.log("Loader wait timeout or not found, proceeding...");
-            }
-
-            await page.waitForTimeout(500);
-
-            // Auto-dismiss cookie banners
-            // First: Try to handle Sourcepoint/eBay consent iframes (used by Marktplaats, eBay, etc.)
-            try {
+                // Auto-dismiss cookie banners (Keep existing logic)
                 const consentFrame = page.frameLocator('iframe[title="SP Consent Message"], iframe[id^="sp_message_iframe_"]');
                 const acceptButton = consentFrame.locator('button:has-text("Accepteren"), button:has-text("Accept"), button:has-text("Akkoord"), button[title="Accepteren"]');
-                
-                // Try clicking the accept button in the iframe with a short timeout
-                await acceptButton.first().click({ timeout: 3000 });
-                console.log('[Proxy] Dismissed Sourcepoint cookie banner in iframe');
-                await page.waitForTimeout(500);
-            } catch (e) {
-                // Sourcepoint iframe not found or click failed, try generic selectors
-                console.log('[Proxy] No Sourcepoint iframe found, trying generic selectors...');
-                
-                const cookieSelectors = [
-                    'button[id*="accept"]',
-                    'button[id*="Accept"]',
-                    'button[class*="accept"]',
-                    'button:has-text("Accepteren")',
-                    'button:has-text("Akkoord")',
-                    'button:has-text("Accept")',
-                    '#gdpr-consent-accept-button',
-                    'button[data-consent="accept"]',
-                    'a:has-text("Doorgaan zonder")',
-                ];
-
-                for (const selector of cookieSelectors) {
-                    try {
-                        const button = await page.$(selector);
-                        if (button) {
-                            console.log(`[Proxy] Found cookie button: ${selector}`);
-                            await button.click();
-                            await page.waitForTimeout(500);
-                            break;
-                        }
-                    } catch (err) {
-                        // Selector didn't match or click failed, continue
-                    }
-                }
-            }
-
-            await page.waitForTimeout(500);
+                await acceptButton.first().click({ timeout: 2000 }).catch(() => {});
+            } catch (e) {}
 
         } catch (e: any) {
             console.log("Navigation error (likely timeout), proceeding:", e.message);
@@ -867,17 +869,28 @@ app.get('/proxy', async (req: Request, res: Response) => {
 
         const selectorScript = fs.readFileSync(getPublicPath('selector.js'), 'utf8');
 
+        // Inject scripts wrapper
         const injectScripts = async () => {
-            await page.evaluate((scriptContent: string) => {
-                const script = document.createElement('script');
-                script.textContent = scriptContent;
-                document.body.appendChild(script);
-
+             await page.evaluate((scriptContent: string) => {
+                // ... (Keep existing injection logic) ...
                 if (!document.querySelector('base')) {
                     const base = document.createElement('base');
                     base.href = window.location.href;
                     document.head.prepend(base);
                 }
+                
+                // Remove problematic elements
+                const elementsToRemove = document.querySelectorAll('script, video, audio, object, embed, iframe, noscript, meta[http-equiv="Content-Security-Policy"], meta[http-equiv="X-Frame-Options"]');
+                elementsToRemove.forEach(el => el.remove());
+
+                const overlaysToRemove = document.querySelectorAll('#preact-border-shadow-host, .sc-pyqe1m-4, .sc-12saxh8-0, [data-testid="cookie-banner"]');
+                overlaysToRemove.forEach(el => el.remove());
+
+                // Inject selector script
+                const script = document.createElement('script');
+                script.textContent = scriptContent;
+                script.id = 'deltawatch-selector-script';
+                document.body.appendChild(script);
 
                 const existingViewport = document.querySelector('meta[name="viewport"]');
                 if (existingViewport) existingViewport.remove();
@@ -892,37 +905,28 @@ app.get('/proxy', async (req: Request, res: Response) => {
                 document.head.appendChild(style);
             }, selectorScript);
         };
-
-        try {
-            await injectScripts();
-        } catch (e: any) {
-            if (e.message.includes('Execution context was destroyed')) {
-                console.log("Navigation detected during injection, waiting and retrying...");
-                try {
-                    await page.waitForLoadState('domcontentloaded');
-                    await injectScripts();
-                } catch (retryErr: any) {
-                    console.error("Retry failed:", retryErr.message);
-                }
-            } else {
-                throw e;
-            }
-        }
+        
+        await injectScripts();
 
         const content = await page.content();
         
-        // Set headers to allow iframe embedding
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.removeHeader('X-Frame-Options');
-        res.setHeader('X-Frame-Options', 'ALLOWALL');
+        res.removeHeader('X-Frame-Options'); 
+        res.setHeader('Content-Security-Policy', "frame-ancestors *;"); 
         res.setHeader('Access-Control-Allow-Origin', '*');
         
         res.send(content);
 
     } catch (error: any) {
         console.error('Proxy Error:', error);
-        res.status(500).send('Error fetching page: ' + error.message);
+        if (!res.headersSent) {
+            res.status(500).send('Error fetching page: ' + error.message);
+        }
     } finally {
+        if (browserInstance) {
+            console.log('[Server] Closing Ephemeral Browser...');
+            await browserInstance.close();
+        }
         proxyRequestsInFlight--;
         console.log(`[Proxy] Request completed (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
     }

@@ -130,7 +130,7 @@ interface ProxySettings {
     auth?: string;
 }
 
-const INTERVAL_MINUTES: Record<string, number> = {
+export const INTERVAL_MINUTES: Record<string, number> = {
     '1m': 1,
     '5m': 5,
     '30m': 30,

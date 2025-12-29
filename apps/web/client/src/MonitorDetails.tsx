@@ -7,7 +7,7 @@ import * as Diff from 'diff';
 import { useToast } from './contexts/ToastContext';
 import { useDialog } from './contexts/DialogContext';
 import { useAuth } from './contexts/AuthContext';
-import { type HistoryRecord as SharedHistoryRecord, type Monitor as SharedMonitor, cleanValue } from '@deltawatch/shared';
+import { type HistoryRecord as SharedHistoryRecord, type Monitor as SharedMonitor, cleanValue, formatCronInterval } from '@deltawatch/shared';
 
 interface Keyword {
     text: string;
@@ -573,7 +573,10 @@ function MonitorDetails() {
                              <div>
                                 <label className="text-gray-500 text-xs uppercase">{t('monitor_details.interval')}</label>
                                 <div className="text-white">
-                                    {monitor.interval}
+                                    {(() => {
+                                        const key = formatCronInterval(monitor.interval);
+                                        return key ? t(`editor.intervals.${key}` as any) : monitor.interval;
+                                    })()}
                                 </div>
                             </div>
                         </div>

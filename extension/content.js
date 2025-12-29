@@ -118,6 +118,12 @@ function showMonitorModal(selector, text) {
 
     const title = document.title || 'New Monitor';
 
+    // Auto-detect price logic
+    const priceRegex = /[\d,.]+/;
+    const currencyRegex = /[€$£¥]/;
+    const isPrice = currencyRegex.test(text) && priceRegex.test(text);
+    const suggestedType = isPrice ? 'price' : 'text';
+
     const modal = document.createElement('div');
     modal.className = 'dw-modal-overlay';
     modal.innerHTML = `
@@ -142,6 +148,25 @@ function showMonitorModal(selector, text) {
         </div>
 
         <div class="dw-input-group">
+            <label class="dw-label">Monitor Type</label>
+            <select class="dw-select" id="dw-type">
+                <option value="text" ${suggestedType === 'text' ? 'selected' : ''}>Text (Content Change)</option>
+                <option value="price" ${suggestedType === 'price' ? 'selected' : ''}>Price (Thresholds)</option>
+            </select>
+        </div>
+
+        <div id="dw-price-options" style="display: ${suggestedType === 'price' ? 'block' : 'none'}; border-left: 2px solid #58a6ff; padding-left: 10px; margin-bottom: 15px;">
+             <div class="dw-input-group">
+                <label class="dw-label">Alert if Price Below (&lt;)</label>
+                <input type="number" class="dw-input" id="dw-price-min" placeholder="e.g. 100">
+            </div>
+            <div class="dw-input-group">
+                <label class="dw-label">Alert if Price Above (&gt;)</label>
+                <input type="number" class="dw-input" id="dw-price-max" placeholder="e.g. 500">
+            </div>
+        </div>
+
+        <div class="dw-input-group">
             <label class="dw-label">Interval</label>
             <select class="dw-select" id="dw-interval">
                 <option value="1m">1 Minute (Rapid)</option>
@@ -163,6 +188,18 @@ function showMonitorModal(selector, text) {
 
     document.body.appendChild(modal);
 
+    // Toggle Price Fields
+    const typeSelect = modal.querySelector('#dw-type');
+    const priceOptions = modal.querySelector('#dw-price-options');
+
+    typeSelect.addEventListener('change', (e) => {
+        if (e.target.value === 'price') {
+            priceOptions.style.display = 'block';
+        } else {
+            priceOptions.style.display = 'none';
+        }
+    });
+
     // Event Listeners for Modal
     modal.querySelector('.dw-modal-close').onclick = () => modal.remove();
     modal.querySelector('#dw-cancel').onclick = () => modal.remove();
@@ -175,12 +212,19 @@ function showMonitorModal(selector, text) {
         status.textContent = '';
         status.style.color = '#c9d1d9';
 
+        const type = modal.querySelector('#dw-type').value;
+        const priceMin = modal.querySelector('#dw-price-min').value;
+        const priceMax = modal.querySelector('#dw-price-max').value;
+
         const payload = {
             url: window.location.href,
             selector: modal.querySelector('#dw-selector').value,
             selector_text: text,
             interval: modal.querySelector('#dw-interval').value,
-            type: 'text',
+            type: type === 'price' ? 'text' : type, // For now, backend treats everything as 'text' type but uses flags
+            price_detection_enabled: type === 'price',
+            price_threshold_min: type === 'price' && priceMin ? parseFloat(priceMin) : null,
+            price_threshold_max: type === 'price' && priceMax ? parseFloat(priceMax) : null,
             name: modal.querySelector('#dw-name').value
         };
 

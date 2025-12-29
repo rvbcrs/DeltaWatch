@@ -94,3 +94,24 @@ export function getStatusColor(status) {
         default: return '#6b7280'; // gray
     }
 }
+/**
+ * Convert a cron expression to a translation key suffix.
+ * e.g. "* * * * *" -> "1m", "0 * * * *" -> "1h"
+ */
+export function formatCronInterval(cron) {
+    if (!cron)
+        return null;
+    const map = {
+        '* * * * *': '1m',
+        '*/5 * * * *': '5m',
+        '*/15 * * * *': '15m',
+        '*/30 * * * *': '30m',
+        '0 * * * *': '1h',
+        '0 */6 * * *': '6h',
+        '0 */8 * * *': '8h',
+        '0 */12 * * *': '12h',
+        '0 0 * * *': '24h',
+        '0 0 * * 0': '1w'
+    };
+    return map[cron.trim()] || null;
+}

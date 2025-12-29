@@ -2,11 +2,11 @@ import { useTranslation } from 'react-i18next';
 import StatsOverview, { type StatsOverviewRef } from './components/StatsOverview'
 import { useState, useEffect, useRef, useCallback, type MouseEvent, type CSSProperties } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Trash2, Edit, Plus, ExternalLink, Pause, Play, RefreshCw, Layout, Copy, Download, Search, X, GripVertical } from 'lucide-react'
+import { Trash2, Edit, Plus, ExternalLink, Pause, Play, RefreshCw, Layout, Copy, Download, Search, X, GripVertical, Upload } from 'lucide-react'
 import { useToast } from './contexts/ToastContext'
 import { useDialog } from './contexts/DialogContext'
 import { useAuth } from './contexts/AuthContext'
-import { timeAgo, formatDate, type HistoryRecord } from '@deltawatch/shared'
+import { timeAgo, formatDate, type HistoryRecord, formatCronInterval } from '@deltawatch/shared'
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -270,6 +270,50 @@ const Dashboard = () => {
       }
   }
 
+  const handleImport = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json';
+    input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            
+            // Validate basic structure
+            if (!data.url || !data.type) {
+                showToast(t('dashboard.toasts.import_invalid_format', 'Invalid file format'), 'error');
+                return;
+            }
+
+            const res = await authFetch(`${API_BASE}/monitors`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...data,
+                    name: (data.name || 'Imported Monitor') + ' (Imported)',
+                    active: false // Safety: start inactive
+                })
+            });
+
+            if (res.ok) {
+                showToast(t('dashboard.toasts.import_success', 'Monitor imported successfully'), 'success');
+                await fetchMonitors();
+                statsRef.current?.refresh();
+            } else {
+                const err = await res.text();
+                showToast(t('dashboard.toasts.import_failed', 'Import failed') + ': ' + err, 'error');
+            }
+        } catch (e) {
+            console.error(e);
+            showToast(t('dashboard.toasts.import_error', 'Failed to read file'), 'error');
+        }
+    };
+    input.click();
+  };
+
   const handleExport = (monitor: Monitor, e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -299,7 +343,7 @@ const Dashboard = () => {
 
   const allTags = [...new Set(monitors.flatMap(m => {
     try { return JSON.parse(m.tags || '[]') as string[]; } catch { return []; }
-  }))].sort();
+  }))].filter(t => t && typeof t === 'string' && t.trim().length > 0).sort();
 
   const filteredMonitors = monitors.filter(m => {
       // Filter by status (from stats tiles)
@@ -374,7 +418,10 @@ const Dashboard = () => {
                             {monitor.price_detection_enabled ? 'PRICE' : (monitor.type === 'visual' ? 'VISUAL' : (monitor.selector === 'body' ? 'FULL PAGE' : 'TEXT'))}
                         </span>
                         <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border bg-red-500/20 text-red-300 border-red-500/30">
-                            {monitor.interval}
+                            {(() => {
+                                const key = formatCronInterval(monitor.interval);
+                                return key ? key.toUpperCase() : monitor.interval;
+                            })()}
                         </span>
                         {monitor.detected_price && monitor.detected_price > 0 && (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border bg-emerald-900/30 text-emerald-400 border-emerald-900 flex items-center gap-1">
@@ -527,6 +574,14 @@ const Dashboard = () => {
                 >
                     <ExternalLink size={18} />
                 </Link>
+                <div className="h-6 w-px bg-gray-700 mx-1"></div>
+                <button 
+                    onClick={handleImport}
+                    className="p-1.5 rounded-md transition-all bg-gray-800 text-gray-500 hover:text-white"
+                    title={t('dashboard.import_monitor', 'Import Monitor')}
+                >
+                    <Upload size={18} />
+                </button>
                 <div className="h-6 w-px bg-gray-700 mx-1"></div>
                 <div className="flex bg-gray-800 rounded-lg p-0.5">
                     <button

@@ -30,4 +30,9 @@ export declare function getSparklineHistoryIndex(barIndex: number, historyLength
  * Get the color for a history status.
  */
 export declare function getStatusColor(status: 'unchanged' | 'changed' | 'error'): string;
+/**
+ * Convert a cron expression to a translation key suffix.
+ * e.g. "* * * * *" -> "1m", "0 * * * *" -> "1h"
+ */
+export declare function formatCronInterval(cron: string): string | null;
 //# sourceMappingURL=index.d.ts.map

@@ -14,7 +14,12 @@ export interface ExtractedPrice {
     currency: string;
     source: 'json-ld' | 'og-meta' | 'microdata' | 'text-pattern';
     raw: string; // Original string for debugging
+    selector?: string; // CSS Selector if found via DOM
 }
+
+/* ... existing code ... */
+
+
 
 // Currency symbols to currency codes
 const CURRENCY_MAP: Record<string, string> = {
@@ -360,8 +365,13 @@ async function extractFromDomSelectors(page: Page): Promise<ExtractedPrice | nul
                 '.priceToPay .a-offscreen',
                 '.a-price[data-a-size="xl"] .a-offscreen',
                 '.a-price[data-a-size="l"] .a-offscreen',
+                '.a-price[data-a-size="b"] .a-offscreen', // Added 'b' size
                 '.a-price[data-a-color="base"] .a-offscreen',
                 '.a-price .a-offscreen',
+                
+                // Amazon fallback: Whole + Fraction (sometimes offscreen is missing/hidden)
+                '.a-price-whole', 
+                
                 '#priceblock_ourprice',
                 '#priceblock_dealprice',
                 '#priceblock_saleprice',
@@ -381,6 +391,10 @@ async function extractFromDomSelectors(page: Page): Promise<ExtractedPrice | nul
                 '.price-value',
                 '[itemprop="price"]',
                 '[data-price]',
+                // Generic fallbacks
+                '.price',
+                '.current-price', 
+                '.amount'
             ];
             
             for (const sel of selectors) {
@@ -408,7 +422,8 @@ async function extractFromDomSelectors(page: Page): Promise<ExtractedPrice | nul
                         price: parsed.price,
                         currency: parsed.currency,
                         source: 'text-pattern',
-                        raw: info.text
+                        raw: info.text,
+                        selector: info.selector
                     };
                 }
             }
@@ -494,9 +509,12 @@ export async function extractPrice(page: Page, elementText?: string): Promise<Ex
         return result;
     }
     
-    // 5. Try text pattern matching on element text
-    if (elementText) {
-        result = extractFromText(elementText);
+    // 5. Try text pattern matching on element text or full body
+    const textToScan = elementText || await page.innerText('body').catch(() => '') || '';
+    if (textToScan) {
+        // Limit text length to avoid performance issues
+        const truncated = textToScan.substring(0, 50000); 
+        result = extractFromText(truncated);
         if (result) {
             console.log(`[PriceExtractor] Found via text pattern: ${result.currency} ${result.price}`);
             return result;

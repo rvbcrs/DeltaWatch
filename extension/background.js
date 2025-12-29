@@ -10,15 +10,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function createMonitor(payload) {
-    // Get server URL from storage
-    const items = await chrome.storage.sync.get({ serverUrl: 'http://localhost:3000' });
+    // Get server URL and token from storage
+    const items = await chrome.storage.sync.get({ serverUrl: 'http://localhost:3000', token: null });
     const serverUrl = items.serverUrl.replace(/\/$/, '');
+    const token = items.token;
+
+    if (!token) {
+        throw new Error('Not logged in (Token missing)');
+    }
 
     try {
         const response = await fetch(`${serverUrl}/monitors`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
             },
             body: JSON.stringify(payload)
         });

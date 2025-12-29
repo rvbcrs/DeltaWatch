@@ -570,4 +570,10 @@
         return path.join(' > ');
     }
 
+    // Handshake: Tell Editor we are ready to receive mode
+    setTimeout(() => {
+        window.parent.postMessage({ type: 'SELECTOR_READY' }, '*');
+        console.log('[Wachet] Sent SELECTOR_READY');
+    }, 100);
+
 })();

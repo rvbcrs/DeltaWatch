@@ -1,9 +1,9 @@
 // Editor doesn't use Layout! Removing the import which is causing issues.
-import { useState, useEffect, type KeyboardEvent } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from './contexts/ToastContext';
-import { ArrowLeft, Image, FileText, MousePointerClick, Bell, Brain } from 'lucide-react';
+import { MousePointerClick, Save, Play, Clock, ArrowLeft, Trash2, Sliders, AlertTriangle, CheckCircle, RotateCcw, ScanEye, FileText, Type, MousePointer2, Smartphone, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 
 interface SelectedElement {
@@ -32,7 +32,7 @@ function Editor() {
   const [interval, setIntervalValue] = useState('1h')
   const navigate = useNavigate()
   const { id } = useParams()
-  const [monitorType, setMonitorType] = useState<'text' | 'visual'>('text');
+  const [monitorType, setMonitorType] = useState<'text' | 'visual' | 'price'>('text');
   const { showToast } = useToast();
   const { authFetch } = useAuth();
   const { t } = useTranslation();
@@ -54,6 +54,35 @@ function Editor() {
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false)
 
+  // Floating Panel Drag State
+  const [floatingOffset, setFloatingOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        setFloatingOffset({
+          x: e.clientX - dragStart.x,
+          y: e.clientY - dragStart.y
+        });
+      }
+    };
+    
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, dragStart]);
+
   useEffect(() => {
     if (id) {
         const fetchMonitor = async () => {
@@ -66,12 +95,20 @@ function Editor() {
                         setUrl(monitor.url);
                         setName(monitor.name || '');
                         setIntervalValue(monitor.interval);
-                        setMonitorType(monitor.type);
+                        
+                        // Set Monitor Type
+                        if (monitor.price_detection_enabled) {
+                            setMonitorType('price');
+                            setPriceDetectionEnabled(true);
+                        } else {
+                            setMonitorType(monitor.type);
+                            setPriceDetectionEnabled(false);
+                        }
+
                         setAiPrompt(monitor.ai_prompt || '');
                         setAiOnlyVisual(!!monitor.ai_only_visual);
                         setRetryCount(monitor.retry_count ?? 3);
                         setRetryDelay(monitor.retry_delay ?? 2000);
-                        setPriceDetectionEnabled(!!monitor.price_detection_enabled);
                         setPriceThresholdMin(monitor.price_threshold_min ?? '');
                         setPriceThresholdMax(monitor.price_threshold_max ?? '');
                         
@@ -109,7 +146,7 @@ function Editor() {
             setProxyUrl(`${API_BASE}/proxy?url=${encodeURIComponent(paramUrl)}`);
         }
         if (paramName) setName(paramName);
-        if (paramType) setMonitorType(paramType as 'text' | 'visual');
+        if (paramType) setMonitorType(paramType as 'text' | 'visual' | 'price');
         if (paramSelector) {
             setSelectedElement({ selector: paramSelector, text: t('editor.toasts.auto_detected') });
         }
@@ -144,23 +181,63 @@ function Editor() {
           } else {
               showToast(t('editor.toasts.no_elements'), 'error');
           }
+      } else if (type === 'SELECTOR_READY') {
+          // Iframe script is ready, enforce correct mode immediately
+          const iframe = document.querySelector('iframe');
+          if (iframe && iframe.contentWindow) {
+              // Re-calculate strict mode logic
+              let shouldBeActive = false;
+              if (monitorType === 'text') {
+                  const isBody = selectedElement && selectedElement.selector === 'body';
+                  shouldBeActive = isSelecting && !isBody;
+              }
+              
+              iframe.contentWindow.postMessage({ 
+                  type: 'set_mode', 
+                  payload: { active: shouldBeActive } 
+              }, '*');
+              
+              // Force clear if needed
+              if (!shouldBeActive) {
+                  iframe.contentWindow.postMessage({ type: 'clear' }, '*');
+              }
+          }
       }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedElement]);
+  }, [selectedElement, monitorType, isSelecting, t, navigate]);
 
+  // Sync selection mode with Iframe
   useEffect(() => {
     const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
     if (iframe && iframe.contentWindow) {
+        // STRICT: Only allow active selection in interactive Text Mode for specific elements
+        // Disabled for Price Mode, Visual Mode, and Full Page Body Text Mode
+        let shouldBeActive = false;
+        
+        if (monitorType === 'text') {
+             // Only active if we are selecting AND it's not a full-page body monitor
+             // If selectedElement is body, we probably want to disable selection to show full page clearly
+             if (selectedElement && selectedElement.selector === 'body') {
+                 shouldBeActive = false;
+             } else {
+                 shouldBeActive = isSelecting;
+             }
+        }
+
         iframe.contentWindow.postMessage({ 
             type: 'set_mode', 
-            payload: { active: isSelecting } 
+            payload: { active: shouldBeActive } 
         }, '*');
+        
+        // Clear any existing highlights if we are in a "Full Page" mode (visual or body-text)
+        if (monitorType === 'visual' || (monitorType === 'text' && selectedElement?.selector === 'body')) {
+             iframe.contentWindow.postMessage({ type: 'clear' }, '*');
+        }
     }
-  }, [isSelecting, proxyUrl]);
+  }, [isSelecting, proxyUrl, monitorType, selectedElement]);
 
   const handleGo = async () => {
     if (!url) return;
@@ -168,6 +245,15 @@ function Editor() {
     const target = `${API_BASE}/proxy?url=${encodeURIComponent(url)}`;
     setProxyUrl(target);
   }
+
+  // Sync flag with type
+  useEffect(() => {
+    if (monitorType === 'price') {
+        setPriceDetectionEnabled(true);
+    } else {
+        setPriceDetectionEnabled(false);
+    }
+  }, [monitorType]);
 
   const handleSave = async () => {
     if (!url) return;
@@ -180,22 +266,25 @@ function Editor() {
         const urlParams = id ? `/${id}` : '';
         const method = id ? 'PUT' : 'POST';
         
+        const finalType = monitorType === 'price' ? 'text' : monitorType;
+        const finalPriceEnabled = monitorType === 'price' ? 1 : 0;
+
         const response = await authFetch(`${API_BASE}/monitors${urlParams}`, {
             method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name,
                 url,
-                selector: monitorType === 'text' && selectedElement ? selectedElement.selector : '',
-                selector_text: monitorType === 'text' && selectedElement ? selectedElement.text : '',
+                selector: (monitorType === 'text' || monitorType === 'price') && selectedElement ? selectedElement.selector : '',
+                selector_text: (monitorType === 'text' || monitorType === 'price') && selectedElement ? selectedElement.text : '',
                 interval,
-                type: monitorType,
+                type: finalType,
                 notify_config: notifyConfig,
                 ai_prompt: aiPrompt,
                 ai_only_visual: aiOnlyVisual ? 1 : 0,
                 retry_count: retryCount,
                 retry_delay: retryDelay,
-                price_detection_enabled: priceDetectionEnabled ? 1 : 0,
+                price_detection_enabled: finalPriceEnabled,
                 price_threshold_min: priceThresholdMin || null,
                 price_threshold_max: priceThresholdMax || null
             })
@@ -213,9 +302,62 @@ function Editor() {
     }
   }
 
+  // Auto-scan price when switching to Price Monitor
+  useEffect(() => {
+    if (monitorType === 'price' && url && !priceScanResult && !isScanning) {
+        handleScanPrice();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitorType, url]);
+
+  // Force disable selection in Price Mode
+  useEffect(() => {
+    const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
+    if (iframe && iframe.contentWindow) {
+        // Send disable mode
+        iframe.contentWindow.postMessage({ 
+            type: 'set_mode', 
+            payload: { active: monitorType !== 'price' && isSelecting } 
+        }, '*');
+        
+        // Also clear any existing highlight/selection
+        if (monitorType === 'price') {
+             iframe.contentWindow.postMessage({ type: 'clear' }, '*');
+             setSelectedElement(null);
+        }
+    }
+  }, [monitorType, isSelecting]);
+
+  const handleScanPrice = async () => {
+    if (!url) return;
+    setIsScanning(true);
+    setPriceScanResult(null);
+    try {
+        const res = await authFetch(`${API_BASE}/api/scan-price`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (data.success && data.price !== null) {
+            setPriceScanResult(data);
+            showToast(t('editor.toasts.price_detected', { price: `${data.currency} ${data.price}` }), "success");
+        } else {
+            showToast(t('editor.toasts.price_not_found'), "error");
+        }
+    } catch (e) {
+        console.error("Price scan failed", e);
+        showToast(t('editor.toasts.price_scan_error'), "error");
+    } finally {
+        setIsScanning(false);
+    }
+  };
+
   useEffect(() => {
      if (proxyUrl && selectedElement && id && monitorType === 'text') {
          const timer = setTimeout(() => {
+   // ... rest of hook
+
              const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
              if (iframe && iframe.contentWindow) {
                  iframe.contentWindow.postMessage({
@@ -229,51 +371,7 @@ function Editor() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proxyUrl, id]);
 
-  const getUiMode = (): 'visual' | 'text_page' | 'text_element' => {
-    if (monitorType === 'visual') return 'visual';
-    if (monitorType === 'text') {
-        if (selectedElement && selectedElement.selector === 'body') return 'text_page';
-        return 'text_element';
-    }
-    return 'text_element';
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') handleGo();
-  };
-
-  const handleAiAnalyze = async () => {
-    if (!url) return;
-    setIsLoading(true);
-    setProxyUrl(`${API_BASE}/proxy?url=${encodeURIComponent(url)}`);
-    
-    showToast(t('editor.toasts.ai_analyzing'), "info");
-    
-    try {
-        const res = await authFetch(`${API_BASE}/api/ai/analyze-page`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, prompt: aiPrompt })
-        });
-        const data = await res.json();
-        if (data.data) {
-            const { name: aiName, selector, type } = data.data;
-            setName(aiName);
-            if (selector) {
-                setSelectedElement({ selector, text: t('editor.toasts.auto_detected') });
-                setMonitorType(type || 'text');
-            }
-            showToast(t('editor.toasts.config_applied'), "success");
-        } else {
-            showToast(t('editor.toasts.ai_no_config'), "error");
-        }
-    } catch (e) {
-        showToast(t('editor.toasts.ai_error', { error: e instanceof Error ? e.message : 'Unknown error' }), "error");
-    } finally {
-        setIsLoading(false);
-    }
-  };
-
+  /* Removed unused helper functions */
   const handleTestSelector = () => {
     const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
     if (iframe && selectedElement) {
@@ -284,22 +382,32 @@ function Editor() {
     }
   };
 
-  const handleClearSelection = () => {
-    setSelectedElement(null);
-    const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
-    if (iframe && iframe.contentWindow) {
-        iframe.contentWindow.postMessage({ type: 'clear' }, '*');
-    }
-  };
 
   const handleIframeLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
     const iframe = e.currentTarget;
+    
+    // STRICT Mode Logic for Iframe Load
+    let shouldBeActive = false;
+    if (monitorType === 'text') {
+         if (selectedElement && selectedElement.selector === 'body') {
+             shouldBeActive = false; 
+         } else {
+             shouldBeActive = isSelecting;
+         }
+    }
+    
+    // Send mode configuration
     iframe.contentWindow?.postMessage({ 
         type: 'set_mode', 
-        payload: { active: isSelecting } 
+        payload: { active: shouldBeActive } 
     }, '*');
     
-    if (selectedElement && monitorType === 'text') {
+    // Clear any highlights in non-selection modes
+    if (monitorType === 'price' || monitorType === 'visual' || (monitorType === 'text' && selectedElement?.selector === 'body')) {
+        iframe.contentWindow?.postMessage({ type: 'clear' }, '*');
+    }
+    
+    if (selectedElement && monitorType === 'text' && selectedElement.selector !== 'body') {
         iframe.contentWindow?.postMessage({
              type: 'highlight',
              payload: selectedElement.selector
@@ -308,442 +416,539 @@ function Editor() {
     setIsLoading(false);
   };
 
+  const [step, setStep] = useState<'url' | 'type' | 'config'>('url');
+  
+  // Effect to automatically advance step if editing existing monitor
+  useEffect(() => {
+      if (id && url && monitorType) {
+          setStep('config');
+      }
+  }, [id, url, monitorType]);
+
+  const handleUrlSubmit = () => {
+      if (url) {
+          handleGo();
+          setStep('type');
+      }
+  };
+
   return (
-    <div className="flex h-screen w-full bg-[#0d1117] flex-col text-white">
-      <header className="bg-[#161b22] p-4 shadow-md flex flex-col space-y-4 z-30 relative border-b border-gray-800">
-        <div className="flex flex-col md:flex-row items-center justify-between w-full max-w-6xl mx-auto gap-4">
-             <div className="flex items-center w-full md:w-auto gap-4">
+    <div className="flex h-screen w-full bg-[#0d1117] flex-col text-white font-sans">
+      {/* Header / Nav */}
+      <header className="bg-[#161b22] px-6 py-4 shadow-md flex items-center justify-between border-b border-gray-800 z-30">
+          <div className="flex items-center gap-4">
                <button onClick={() => navigate('/')} className="text-gray-400 hover:text-white transition-colors">
-                  <ArrowLeft />
+                  <ArrowLeft size={20} />
                </button>
-               <h1 className="text-xl font-bold text-white shadow-sm whitespace-nowrap">
-                  {id ? t('editor.title_edit') : t('editor.title_new')}
-               </h1>
-             </div>
-             
-             <div className="flex flex-col md:flex-row items-center w-full gap-4 md:flex-1 md:justify-end flex-wrap">
-               <div className="flex bg-[#0d1117] rounded-lg p-1 border border-gray-700 w-full md:w-auto justify-center">
-                   <button 
-                       onClick={() => { setMonitorType('visual'); setSelectedElement(null); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'visual' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
-                   >
-                       <Image size={16} className="inline-block mr-1" /> {t('editor.visual')}
-                   </button>
-                   <button 
-                       onClick={() => { setMonitorType('text'); setSelectedElement(null); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'text_element' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
-                   >
-                       <MousePointerClick size={16} className="inline-block mr-1" /> {t('editor.element')}
-                   </button>
-                   <button 
-                       onClick={() => { setMonitorType('text'); setSelectedElement({ selector: 'body', text: 'Full Page Text' }); }}
-                       className={`px-3 py-1 text-sm rounded-md transition-all flex-1 md:flex-none text-center ${getUiMode() === 'text_page' ? 'bg-[#1f6feb] text-white' : 'text-gray-400 hover:text-white'}`}
-                   >
-                       <FileText size={16} className="inline-block mr-1" /> {t('editor.page')}
-                   </button>
+               <div className="flex flex-col">
+                   <h1 className="text-lg font-bold text-white leading-tight">
+                      {id ? t('editor.title_edit') : t('editor.title_new')}
+                   </h1>
+                   <div className="flex items-center gap-2 text-xs text-gray-500">
+                       <span className={step === 'url' ? 'text-blue-400 font-bold' : ''}>1. URL</span>
+                       <span>&rsaquo;</span>
+                       <span className={step === 'type' ? 'text-blue-400 font-bold' : ''}>2. Type</span>
+                       <span>&rsaquo;</span>
+                       <span className={step === 'config' ? 'text-blue-400 font-bold' : ''}>3. Config</span>
+                   </div>
                </div>
-
-               <input 
-                 type="text" 
-                 placeholder={t('editor.name_placeholder')} 
-                 className="p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600 w-full md:w-48"
-                 value={name}
-                 onChange={(e) => setName(e.target.value)}
-               />
-
-               <div className="flex w-full md:w-auto md:flex-1 gap-2 min-w-0">
-                   <input 
-                     type="text" 
-                     placeholder={t('editor.url_placeholder')} 
-                     className="flex-1 p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-600 min-w-0"
-                     value={url}
-                     onChange={(e) => setUrl(e.target.value)}
-                     onKeyDown={handleKeyDown}
-                   />
-                   <button 
-                     onClick={handleGo}
-                     disabled={isLoading}
-                     className={`px-6 py-2 rounded font-medium transition flex items-center justify-center gap-2 ${isLoading ? 'bg-gray-600 cursor-not-allowed' : 'bg-[#1f6feb] hover:bg-blue-600 text-white'}`}
-                   >
-                     {isLoading ? (
-                         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                     ) : t('editor.go')}
-                   </button>
-                   
-                   <button
-                        onClick={handleAiAnalyze}
-                        disabled={!url || isLoading}
-                        title={t('editor.magical_create')}
-                        className={`px-3 py-2 rounded font-medium transition flex items-center justify-center gap-2 ${!url || isLoading ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-500 text-white'}`}
-                   >
-                       ✨
-                   </button>
-               </div>
-             </div>
-        </div>
-        
-        <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between text-sm text-gray-300 gap-4">
-            <div className="w-full md:w-auto">
-                {monitorType === 'text' ? (
-                    <div className="flex flex-col md:flex-row items-center justify-between gap-4 w-full">
-                        <p className="text-gray-400 text-sm flex items-center gap-2">
-                            <span className="bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded text-xs uppercase font-bold tracking-wider">Tip</span>
-                            {isSelecting ? t('editor.tip_select') : t('editor.tip_interact')}
-                        </p>
-                        
-                     <div className="flex bg-[#21262d] rounded-lg p-1 overflow-x-auto max-w-full">
-                            <button 
-                                onClick={handleClearSelection}
-                                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-all mr-2 border-r border-gray-700 pr-3"
-                                title={t('editor.clear')}
-                            >
-                                <span className="font-bold">×</span> {t('editor.clear')}
-                            </button>
-
-                            <button 
-                                onClick={() => setIsSelecting(true)}
-                                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
-                            >
-                                <MousePointerClick size={14} />
-                                {t('editor.select')}
-                            </button>
-                            <button 
-                                onClick={() => setIsSelecting(false)}
-                                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${!isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
-                            >
-                                <MousePointerClick className="rotate-90" size={14} />
-                                {t('editor.interact')}
-                            </button>
-                        </div>
-                    </div>
-                ) : (
-                    <span className="text-blue-400">{t('editor.visual_mode_desc')}</span>
-                )}
-            </div>
-             <div className="flex items-center justify-between w-full md:w-auto gap-4">
-                 
-                 <div className="flex items-center gap-2">
-                     <Bell size={16} className="text-gray-400" />
-                     <select 
-                         value={notifyConfig.method} 
-                         onChange={(e) => setNotifyConfig({ ...notifyConfig, method: e.target.value })}
-                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[160px]"
-                         title="Notification Rule"
-                     >
-                         <option value="all">{t('editor.always_notify')}</option>
-                         <option value="ai_focus">{t('editor.ai_focus')}</option>
-                         <option value="value_lt">{t('editor.val')} &lt;</option>
-                         <option value="value_gt">{t('editor.val')} &gt;</option>
-                         <option value="contains">{t('editor.contains')}</option>
-                         <option value="not_contains">{t('editor.not_contains')}</option>
-                     </select>
-                     {notifyConfig.method !== 'all' && notifyConfig.method !== 'ai_focus' && (
-                         <input 
-                             type="text" 
-                             placeholder={t('editor.val')} 
-                             value={notifyConfig.threshold}
-                             onChange={(e) => setNotifyConfig({ ...notifyConfig, threshold: e.target.value })}
-                             className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-20"
-                         />
-                     )}
-                 </div>
-
-                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4">
-                     <Brain size={16} className="text-purple-400" />
-                     <input 
-                         type="text" 
-                         placeholder={t('editor.ai_prompt_placeholder')} 
-                         value={aiPrompt}
-                         onChange={(e) => setAiPrompt(e.target.value)}
-                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-purple-500 w-48 placeholder-gray-600"
-                         title="Custom instructions for AI Analysis"
-                     />
-                 </div>
-
-                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4">
-                     <label className="text-gray-400 text-sm whitespace-nowrap">{t('editor.check_every')}</label>
-                     <select 
-                         value={interval} 
-                         onChange={(e) => setIntervalValue(e.target.value)}
-                         className="bg-[#0d1117] border border-gray-700 text-white rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                     >
-                         <option value="1m">1m</option>
-                         <option value="5m">5m</option>
-                         <option value="30m">30m</option>
-                         <option value="1h">1h</option>
-                         <option value="8h">8h</option>
-                         <option value="24h">24h</option>
-                         <option value="1w">1w</option>
-                     </select>
-                 </div>
-
-                 {/* Price Detection Toggle */}
-                 <div className="flex items-center gap-2 border-l border-gray-700 pl-4 relative">
-                     <label className="flex items-center gap-2 cursor-pointer">
-                         <input 
-                             type="checkbox" 
-                             checked={priceDetectionEnabled}
-                             onChange={(e) => setPriceDetectionEnabled(e.target.checked)}
-                             className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-emerald-600 focus:ring-emerald-500"
-                         />
-                         <span className="text-gray-400 text-sm whitespace-nowrap">💰 Price</span>
-                     </label>
-                     {priceDetectionEnabled && (
-                         <div className="flex gap-1 items-center">
-                             <input
-                                 type="number"
-                                 placeholder="Min"
-                                 value={priceThresholdMin}
-                                 onChange={(e) => setPriceThresholdMin(e.target.value ? Number(e.target.value) : '')}
-                                 className="w-14 bg-[#0d1117] border border-gray-700 text-white rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                 title="Alert when price drops below this"
-                             />
-                             <input
-                                 type="number"
-                                 placeholder="Max"
-                                 value={priceThresholdMax}
-                                 onChange={(e) => setPriceThresholdMax(e.target.value ? Number(e.target.value) : '')}
-                                 className="w-14 bg-[#0d1117] border border-gray-700 text-white rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                 title="Alert when price rises above this"
-                             />
-                             <button
-                                 onClick={async () => {
-                                     console.log('[ScanPrice] Button clicked, url:', url);
-                                     if (!url) return;
-                                     setIsScanning(true);
-                                     setPriceScanResult(null);
-                                     try {
-                                         console.log('[ScanPrice] Sending request...');
-                                         const resp = await authFetch(`${API_BASE}/api/scan-price`, {
-                                             method: 'POST',
-                                             headers: { 'Content-Type': 'application/json' },
-                                             body: JSON.stringify({ url })
-                                         });
-                                         console.log('[ScanPrice] Response status:', resp.status);
-                                         const data = await resp.json();
-                                         console.log('[ScanPrice] Response data:', data);
-                                         setPriceScanResult(data);
-                                     } catch (e: any) {
-                                         console.log('[ScanPrice] Error:', e);
-                                         setPriceScanResult({ success: false, message: e.message || 'Network error' });
-                                     }
-                                     setIsScanning(false);
-                                 }}
-                                 disabled={!url || isScanning}
-                                 className={`px-2 py-1 rounded text-xs font-medium ${!url || isScanning ? 'bg-gray-700 text-gray-500' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
-                                 title="Scan page for price"
-                             >
-                                 {isScanning ? '...' : '🔍'}
-                             </button>
-                             {priceScanResult && (
-                                 <span 
-                                     className={`text-xs whitespace-nowrap ${priceScanResult.success ? 'text-emerald-400' : 'text-red-400'}`}
-                                     title={priceScanResult.success ? `Source: ${priceScanResult.source}` : priceScanResult.message}
-                                 >
-                                     {priceScanResult.success 
-                                         ? `${priceScanResult.formatted}`
-                                         : `✗ ${priceScanResult.message || 'No price'}`}
-                                 </span>
-                             )}
-                         </div>
-                     )}
-                 </div>
-                  <button 
-                      onClick={handleSave}
-                      disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)}
-                      className={`px-6 py-1 rounded transition font-medium w-32 justify-center flex ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-500'}`}
-                  >
-                      {t('editor.save')}
-                  </button>
-             </div>
-        </div>
+          </div>
+          {step === 'config' && (
+              <button 
+                  onClick={handleSave}
+                  disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)}
+                  className={`px-6 py-2 rounded-lg font-bold transition flex items-center gap-2 ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-[#238636] text-white hover:bg-[#2ea043] shadow-lg hover:shadow-green-900/20'}`}
+              >
+                  {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : null}
+                  {t('editor.save')}
+              </button>
+          )}
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        {selectedElement && monitorType === 'text' && (
-            <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
-                <h2 className="text-lg font-semibold mb-2 text-white">{t('editor.selected_element')}</h2>
-                <div className="flex gap-2 mb-2">
-                    <input 
-                        type="text"
-                        value={selectedElement.selector}
-                        onChange={(e) => setSelectedElement({ ...selectedElement, selector: e.target.value })}
-                        className="flex-1 bg-[#0d1117] p-2 rounded text-xs font-mono break-all border border-gray-700 text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        placeholder={t('editor.selector_placeholder')}
-                    />
-                    <button
-                        onClick={handleTestSelector}
-                        className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-500 transition whitespace-nowrap"
-                        title="Test selector and highlight matching element"
-                    >
-                        🔍 {t('editor.test')}
-                    </button>
-                </div>
-                <div className="mb-4">
-                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">{t('editor.current_text')}</h3>
-                    <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200">{selectedElement.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
-                </div>
-                
-                <div className="mb-4 p-3 bg-[#0d1117] rounded border border-gray-700">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                        <input 
-                            type="checkbox" 
-                            checked={aiOnlyVisual}
-                            onChange={(e) => setAiOnlyVisual(e.target.checked)}
-                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500"
-                        />
-                        <span className="text-sm text-gray-300">{t('editor.ai_only')}</span>
-                    </label>
-                    <p className="text-xs text-gray-500 mt-1">{t('editor.ai_only_desc')}</p>
-                </div>
-
-                {/* Retry Configuration */}
-                <div className="mb-4 p-3 bg-[#0d1117] rounded border border-gray-700">
-                    <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-                        🔄 {t('editor.retry_config', 'Retry Configuration')}
-                    </h3>
-                    <div className="space-y-3">
-                        <div>
-                            <label className="text-xs text-gray-400 block mb-1">
-                                {t('editor.retry_count', 'Retry Count')}
-                            </label>
-                            <select
-                                value={retryCount}
-                                onChange={(e) => setRetryCount(Number(e.target.value))}
-                                className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
-                                    <option key={n} value={n}>{n}x</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="text-xs text-gray-400 block mb-1">
-                                {t('editor.retry_delay', 'Delay Between Retries')}
-                            </label>
-                            <select
-                                value={retryDelay}
-                                onChange={(e) => setRetryDelay(Number(e.target.value))}
-                                className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                                <option value={500}>0.5s</option>
-                                <option value={1000}>1s</option>
-                                <option value={2000}>2s</option>
-                                <option value={3000}>3s</option>
-                                <option value={5000}>5s</option>
-                                <option value={10000}>10s</option>
-                            </select>
-                        </div>
-                        <p className="text-xs text-gray-500">
-                            {t('editor.retry_desc', 'If the element is not found, retry this many times with the specified delay.')}
-                        </p>
-                    </div>
-                </div>
-
-                {/* Price Detection */}
-                <div className="mb-4 p-3 bg-[#0d1117] rounded border border-gray-700">
-                    <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-                        💰 Price Detection
-                    </h3>
-                    <label className="flex items-center gap-2 cursor-pointer mb-3">
-                        <input 
-                            type="checkbox" 
-                            checked={priceDetectionEnabled}
-                            onChange={(e) => setPriceDetectionEnabled(e.target.checked)}
-                            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <span className="text-sm text-gray-300">Enable automatic price detection</span>
-                    </label>
-                    {priceDetectionEnabled && (
-                        <div className="grid grid-cols-2 gap-3 mt-3">
-                            <div>
-                                <label className="text-xs text-gray-400 block mb-1">Notify when price ≤</label>
-                                <input
-                                    type="number"
-                                    placeholder="Min price"
-                                    value={priceThresholdMin}
-                                    onChange={(e) => setPriceThresholdMin(e.target.value ? Number(e.target.value) : '')}
-                                    className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                />
-                            </div>
-                            <div>
-                                <label className="text-xs text-gray-400 block mb-1">Notify when price ≥</label>
-                                <input
-                                    type="number"
-                                    placeholder="Max price"
-                                    value={priceThresholdMax}
-                                    onChange={(e) => setPriceThresholdMax(e.target.value ? Number(e.target.value) : '')}
-                                    className="w-full bg-[#161b22] border border-gray-700 text-white rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                />
-                            </div>
-                            <p className="col-span-2 text-xs text-gray-500">
-                                Automatically extracts prices from JSON-LD, Open Graph, or text patterns.
-                            </p>
-                        </div>
-                    )}
-                </div>
-            </div>
-        )}
-
-        <div className="flex-1 bg-[#0d1117] relative flex flex-col">
-          {proxyUrl ? (
-            <div className="flex-1 relative bg-gray-900">
-                {/* Iframe container - base layer */}
-                <div className="absolute inset-0 bg-white">
-                    <iframe 
-                        src={proxyUrl} 
-                        className="w-full h-full border-0"
-                        title="Website Preview"
-                        sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                        onLoad={handleIframeLoad}
-                    />
-                    {!proxyUrl && (
-                        <div className="absolute inset-0 flex items-center justify-center text-gray-400">
-                            {t('editor.enter_url_verify')}
-                        </div>
-                    )}
-                </div>
-                
-                {/* Loading overlay - shown while loading, blocks interaction */}
-                {isLoading && (
-                   <div className="absolute inset-0 flex items-center justify-center bg-gray-900 z-10">
-                       <div className="flex flex-col items-center">
-                           <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                           <p className="text-gray-400">{t('editor.loading')}</p>
-                       </div>
-                   </div>
-                )}
-                
-                {/* Visual/body mode overlay - shown when visual monitoring is active */}
-                {(monitorType === 'visual' || (monitorType === 'text' && selectedElement && selectedElement.selector === 'body')) && !isLoading && proxyUrl && (
-                    <div className="absolute inset-0 z-20 bg-blue-900/10 pointer-events-auto flex items-center justify-center backdrop-blur-[1px] border-4 border-blue-500/50">
-                        <div className="bg-[#161b22] p-6 rounded-lg shadow-2xl border border-blue-500/50 text-center max-w-md">
-                            <div className="bg-blue-500/20 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                                {monitorType === 'visual' ? (
-                                    <Image size={32} className="text-blue-400" />
-                                ) : (
-                                    <FileText size={32} className="text-blue-400" />
-                                )}
-                            </div>
-                            <h3 className="text-xl font-bold text-white mb-2">
-                                {monitorType === 'visual' ? t('editor.visual_active') : t('editor.text_active')}
-                            </h3>
-                            <p className="text-gray-300">
-                                {monitorType === 'visual' 
-                                    ? t('editor.visual_active_desc') 
-                                    : t('editor.text_active_desc')}
-                            </p>
-                            <p className="text-gray-400 text-sm mt-4">{t('editor.selection_disabled')}</p>
-                        </div>
-                    </div>
-                )}
-            </div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-gray-600">
-                {t('editor.enter_url_start')}
-            </div>
+      <div className="flex flex-1 overflow-hidden relative">
+          
+          {/* STEP 1: URL INPUT */}
+          {step === 'url' && (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="w-full max-w-2xl bg-[#161b22] p-8 rounded-2xl border border-gray-700 shadow-2xl">
+                      <h2 className="text-2xl font-bold mb-6 text-center text-white">
+                          What website do you want to monitor?
+                      </h2>
+                      <div className="flex gap-4">
+                          <input 
+                            type="text" 
+                            placeholder="https://example.com" 
+                            className="flex-1 p-4 bg-[#0d1117] border border-gray-700 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-lg placeholder-gray-600 transition-all"
+                            value={url}
+                            onChange={(e) => setUrl(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleUrlSubmit()}
+                            autoFocus
+                          />
+                          <button 
+                            onClick={handleUrlSubmit}
+                            disabled={!url}
+                            className={`px-8 rounded-xl font-bold text-lg transition-all transform active:scale-95 ${!url ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg hover:shadow-blue-900/20'}`}
+                          >
+                            Go
+                          </button>
+                      </div>
+                      <div className="mt-6 flex justify-center">
+                          <p className="text-gray-500 text-sm">
+                              Enter the full URL of the page you want to track.
+                          </p>
+                      </div>
+                  </div>
+              </div>
           )}
-        </div>
+
+          {/* STEP 2: TYPE SELECTION */}
+          {step === 'type' && (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 animate-in fade-in slide-in-from-right-10 duration-300">
+                  <div className="w-full max-w-5xl">
+                      <button 
+                          onClick={() => setStep('url')} 
+                          className="mb-8 text-gray-400 hover:text-white flex items-center gap-2 transition-colors"
+                      >
+                          <ArrowLeft size={16} /> Back to URL
+                      </button>
+                      
+                      <h2 className="text-3xl font-bold mb-8 text-center text-white">
+                          How do you want to monitor this page?
+                      </h2>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* TEXT MONITOR */}
+                            <button 
+                                onClick={() => { setMonitorType('text'); setSelectedElement(null); setStep('config'); }}
+                                className="group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-blue-500 transition-all text-left shadow-lg hover:shadow-blue-900/10"
+                            >
+                                <div className="absolute top-6 right-6 p-3 bg-blue-900/20 rounded-xl text-blue-400 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                    <MousePointerClick size={24} />
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-blue-400 transition-colors">Element Text</h3>
+                                <p className="text-gray-400 text-sm leading-relaxed">
+                                    Select a specific part of the page to track (e.g. a price, stock status, or news headline). Best for focused monitoring.
+                                </p>
+                            </button>
+
+                            {/* PRICE MONITOR */}
+                            <button 
+                                onClick={() => { setMonitorType('price'); setStep('config'); }}
+                                className="group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-emerald-500 transition-all text-left shadow-lg hover:shadow-emerald-900/10"
+                            >
+                                <div className="absolute top-6 right-6 p-3 bg-emerald-900/20 rounded-xl text-emerald-400 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                                    <span>💰</span>
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-emerald-400 transition-colors">Price Detection</h3>
+                                <p className="text-gray-400 text-sm leading-relaxed">
+                                    Automatically detect and track product prices. Get notified on price drops or increases.
+                                </p>
+                            </button>
+
+                            {/* VISUAL MONITOR */}
+                            <button 
+                                onClick={() => { setMonitorType('visual'); setSelectedElement(null); setStep('config'); }}
+                                className="group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-purple-500 transition-all text-left shadow-lg hover:shadow-purple-900/10"
+                            >
+                                <div className="absolute top-6 right-6 p-3 bg-purple-900/20 rounded-xl text-purple-400 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                                    <ImageIcon size={24} />
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-purple-400 transition-colors">Visual Snapshot</h3>
+                                <p className="text-gray-400 text-sm leading-relaxed">
+                                    Take screenshots of the page and detect any visual changes. Good for layout changes or visual content.
+                                </p>
+                            </button>
+
+                            {/* FULL PAGE TEXT */}
+                            <button 
+                                onClick={() => { setMonitorType('text'); setSelectedElement({ selector: 'body', text: 'Full Page' }); setStep('config'); }}
+                                className="group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-gray-500 transition-all text-left shadow-lg hover:shadow-gray-900/10"
+                            >
+                                <div className="absolute top-6 right-6 p-3 bg-gray-800 rounded-xl text-gray-400 group-hover:bg-gray-600 group-hover:text-white transition-colors">
+                                    <FileText size={24} />
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-gray-300 transition-colors">Full Page Text</h3>
+                                <p className="text-gray-400 text-sm leading-relaxed">
+                                    Monitor the entire text content of the page. Useful for tracking any content update anywhere on the page.
+                                </p>
+                            </button>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {/* STEP 3: CONFIGURATION (Existing UI Wrapped) */}
+          {step === 'config' && (
+                <div className="flex flex-1 w-full h-full"> 
+                    {selectedElement && monitorType === 'text' && selectedElement.selector !== 'body' && (
+                        <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
+                            <button onClick={() => setStep('type')} className="mb-4 text-xs text-gray-500 hover:text-white flex items-center gap-1">
+                                <ArrowLeft size={12} /> {t('monitor_details.back')}
+                            </button>
+                            {/* ... Existing Sidebar Content for Text ... */}
+                            <h2 className="text-lg font-semibold mb-2 text-white">{t('editor.selected_element')}</h2>
+                            
+                            <div className="flex bg-[#0d1117] rounded-lg p-1 mb-4 border border-gray-700">
+                                <button 
+                                    onClick={() => setIsSelecting(true)}
+                                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+                                >
+                                    <MousePointerClick size={14} />
+                                    {t('editor.select')}
+                                </button>
+                                <button 
+                                    onClick={() => setIsSelecting(false)}
+                                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${!isSelecting ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+                                >
+                                    <MousePointerClick className="rotate-90" size={14} />
+                                    {t('editor.interact')}
+                                </button>
+                            </div>
+
+                            <div className="flex gap-2 mb-2">
+                                <input 
+                                    type="text"
+                                    value={selectedElement.selector}
+                                    onChange={(e) => setSelectedElement({ ...selectedElement, selector: e.target.value })}
+                                    className="flex-1 bg-[#0d1117] p-2 rounded text-xs font-mono break-all border border-gray-700 text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    placeholder={t('editor.selector_placeholder')}
+                                />
+                                <button
+                                    onClick={handleTestSelector}
+                                    className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-500 transition whitespace-nowrap"
+                                    title="Test selector"
+                                >
+                                    🔍
+                                </button>
+                            </div>
+                            <div className="mb-4">
+                                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">{t('editor.current_text')}</h3>
+                                <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200 h-24 overflow-y-auto">{selectedElement.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
+                            </div>
+                            
+                            <hr className="border-gray-800 my-4" />
+                            
+                             <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('editor.name_placeholder')}</label>
+                                    <input 
+                                      type="text" 
+                                      placeholder={t('editor.name_placeholder_default')} 
+                                      className="w-full p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      value={name}
+                                      onChange={(e) => setName(e.target.value)}
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('monitor_details.interval')}</label>
+                                    <select 
+                                        value={interval} 
+                                        onChange={(e) => setIntervalValue(e.target.value)}
+                                        className="w-full bg-[#0d1117] border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                                    >
+                                        <option value="*/1 * * * *">{t('editor.intervals.1m')}</option>
+                                        <option value="*/5 * * * *">{t('editor.intervals.5m')}</option>
+                                        <option value="*/15 * * * *">{t('editor.intervals.15m')}</option>
+                                        <option value="*/30 * * * *">{t('editor.intervals.30m')}</option>
+                                        <option value="0 * * * *">{t('editor.intervals.1h')}</option>
+                                        <option value="0 */6 * * *">{t('editor.intervals.6h')}</option>
+                                        <option value="0 */12 * * *">{t('editor.intervals.12h')}</option>
+                                        <option value="0 0 * * *">{t('editor.intervals.24h')}</option>
+                                    </select>
+                                </div>
+
+                                {/* Retry Config */}
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('editor.retry_policy')}</label>
+                                    <div className="flex gap-2">
+                                        <select
+                                            value={retryCount}
+                                            onChange={(e) => setRetryCount(Number(e.target.value))}
+                                            className="flex-1 bg-[#0d1117] border border-gray-700 text-white rounded p-2 text-sm"
+                                        >
+                                            {[1, 2, 3, 5, 10].map(n => <option key={n} value={n}>{t('editor.retries', {count: n})}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                             </div>
+                        </div>
+                    )}
+                    
+                     {/* SIDEBAR FOR PRICE DETECT MODE */}
+                     {monitorType === 'price' && (
+                         <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
+                             <button onClick={() => setStep('type')} className="mb-4 text-xs text-gray-500 hover:text-white flex items-center gap-1">
+                                <ArrowLeft size={12} /> {t('monitor_details.back')}
+                            </button>
+                             <div className="flex items-center gap-2 mb-6">
+                                 <span className="text-2xl">💰</span>
+                                 <h2 className="text-lg font-bold text-white">{t('editor.price_heading', 'Price Detection')}</h2>
+                             </div>
+                             
+                             <div className="space-y-6">
+                                <div className="bg-gray-800/50 p-3 rounded-lg border border-gray-700">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">{t('editor.detected_price', 'Detected Price')}</label>
+                                        <button 
+                                            onClick={handleScanPrice}
+                                            disabled={isScanning}
+                                            className="text-xs text-blue-400 hover:text-blue-300 disabled:text-gray-600"
+                                        >
+                                            {isScanning ? t('monitor_details.checking') : t('monitor_details.check_now')}
+                                        </button>
+                                    </div>
+                                    
+                                    {isScanning ? (
+                                         <div className="flex items-center justify-center py-4">
+                                             <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                                         </div>
+                                    ) : priceScanResult ? (
+                                        <div className={`text-center py-2 rounded ${priceScanResult.success ? 'bg-emerald-900/20 text-emerald-400' : 'bg-red-900/20 text-red-400'}`}>
+                                            {priceScanResult.success ? (
+                                                <div className="flex flex-col">
+                                                    <span className="text-2xl font-bold">{priceScanResult.formatted}</span>
+                                                    <span className="text-[10px] text-gray-500 mt-1 uppercase">{priceScanResult.source}</span>
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs">{priceScanResult.message}</span>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="text-center py-4 text-gray-500 text-xs italic">
+                                            {t('editor.price_not_found')}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('editor.name_placeholder')}</label>
+                                    <input 
+                                      type="text" 
+                                      placeholder={t('editor.name_placeholder_default')} 
+                                      className="w-full p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      value={name}
+                                      onChange={(e) => setName(e.target.value)}
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <h2 className="text-lg font-semibold mb-2 text-white">{t('editor.price_thresholds')}</h2>
+                                    <div className="grid grid-cols-2 gap-2 mb-1">
+                                        <div>
+                                            <label className="block text-xs font-medium text-gray-400 mb-1">{t('editor.min_price')}</label>
+                                            <input 
+                                                type="number"
+                                                value={priceThresholdMin}
+                                                onChange={(e) => setPriceThresholdMin(e.target.value ? Number(e.target.value) : '')}
+                                                placeholder="0.00"
+                                                className="w-full bg-[#0d1117] border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-gray-400 mb-1">{t('editor.max_price')}</label>
+                                            <input 
+                                                type="number"
+                                                value={priceThresholdMax}
+                                                onChange={(e) => setPriceThresholdMax(e.target.value ? Number(e.target.value) : '')}
+                                                placeholder="0.00"
+                                                className="w-full bg-[#0d1117] border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 italic mb-4">
+                                        {t('editor.price_threshold_hint', 'Leave blank to get notified on ANY price change.')}
+                                    </p>
+                                </div>
+                                
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('monitor_details.interval')}</label>
+                                    <select 
+                                        value={interval} 
+                                        onChange={(e) => setIntervalValue(e.target.value)}
+                                        className="w-full bg-[#0d1117] border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                                    >
+                                        <option value="*/1 * * * *">{t('editor.intervals.1m')}</option>
+                                        <option value="*/5 * * * *">{t('editor.intervals.5m')}</option>
+                                        <option value="*/15 * * * *">{t('editor.intervals.15m')}</option>
+                                        <option value="*/30 * * * *">{t('editor.intervals.30m')}</option>
+                                        <option value="0 * * * *">{t('editor.intervals.1h')}</option>
+                                        <option value="0 */6 * * *">{t('editor.intervals.6h')}</option>
+                                        <option value="0 */12 * * *">{t('editor.intervals.12h')}</option>
+                                        <option value="0 0 * * *">{t('editor.intervals.24h')}</option>
+                                    </select>
+                                </div>
+                             </div>
+
+                         </div>
+                    )}
+                    
+                     {/* SIDEBAR FOR VISUAL/FULLPAGE MODE */}
+                    {(monitorType === 'visual' || (monitorType === 'text' && selectedElement?.selector === 'body')) && (
+                         <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
+                             <button onClick={() => setStep('type')} className="mb-4 text-xs text-gray-500 hover:text-white flex items-center gap-1">
+                                <ArrowLeft size={12} /> {t('monitor_details.back')}
+                            </button>
+                             <div className="flex items-center gap-2 mb-6">
+                                 <span className="text-blue-400">
+                                    {monitorType === 'visual' ? <ScanEye size={28} /> : <FileText size={28} />}
+                                 </span>
+                                 <h2 className="text-lg font-bold text-white">{monitorType === 'visual' ? t('editor.visual') : t('editor.full_page')}</h2>
+                             </div>
+                             
+                             <div className="space-y-6">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('editor.name_placeholder')}</label>
+                                    <input 
+                                      type="text" 
+                                      placeholder={t('editor.name_placeholder_default')} 
+                                      className="w-full p-2 bg-[#0d1117] border border-gray-700 text-white rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      value={name}
+                                      onChange={(e) => setName(e.target.value)}
+                                    />
+                                </div>
+                                
+                                <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700">
+                                   <label className="flex items-center gap-3 cursor-pointer">
+                                        <input 
+                                            type="checkbox" 
+                                            checked={aiOnlyVisual}
+                                            onChange={(e) => setAiOnlyVisual(e.target.checked)}
+                                            className="w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500"
+                                        />
+                                        <div>
+                                            <span className="text-sm font-medium text-white block">{t('editor.ai_analysis')}</span>
+                                            <span className="text-xs text-gray-400">{t('editor.ai_analysis_desc', 'Reduce false positives using AI')}</span>
+                                        </div>
+                                    </label>
+                                </div>
+                                
+                                <div>
+                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('monitor_details.interval')}</label>
+                                    <select 
+                                        value={interval} 
+                                        onChange={(e) => setIntervalValue(e.target.value)}
+                                        className="w-full bg-[#0d1117] border border-gray-700 text-white rounded p-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    >
+                                        <option value="0 * * * *">{t('editor.intervals.1h')}</option>
+                                        <option value="0 */6 * * *">{t('editor.intervals.6h')}</option>
+                                        <option value="0 */12 * * *">{t('editor.intervals.12h')}</option>
+                                        <option value="0 0 * * *">{t('editor.intervals.24h')}</option>
+                                        <option value="0 0 * * 0">{t('editor.intervals.1w')}</option>
+                                    </select>
+                                </div>
+                             </div>
+                         </div>
+                    )}
+
+
+                    {/* PREVIEW PANE */}
+                    <div className="flex-1 bg-[#0d1117] relative flex flex-col">
+                      {proxyUrl ? (
+                        <div className="flex-1 relative bg-gray-900">
+                            {/* Iframe container */}
+                            <div className="absolute inset-0 bg-white">
+                                <iframe 
+                                    src={proxyUrl} 
+                                    className="w-full h-full border-0"
+                                    title="Website Preview"
+                                    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                                    onLoad={handleIframeLoad}
+                                />
+                            </div>
+
+                             {/* Visual/Full Page Overlay */}
+                             {(monitorType === 'visual' || (monitorType === 'text' && selectedElement?.selector === 'body')) && !isLoading && (
+                                <div className="absolute inset-0 bg-black/10 backdrop-blur-sm z-30 flex items-center justify-center pointer-events-none">
+                                    <div className="bg-[#161b22]/90 border border-blue-500/50 p-6 rounded-xl shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-300">
+                                        <div className="p-3 bg-blue-500/20 rounded-full text-blue-400">
+                                            {monitorType === 'visual' ? <ScanEye size={40} /> : <FileText size={40} />}
+                                        </div>
+                                        <div className="text-center">
+                                            <h3 className="text-white font-bold text-xl mb-1">
+                                                {monitorType === 'visual' ? t('editor.visual_active') : t('editor.text_active')}
+                                            </h3>
+                                            <p className="text-gray-400 text-sm max-w-[240px] leading-relaxed">
+                                                {monitorType === 'visual' ? t('editor.visual_active_desc') : t('editor.text_active_desc')}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                             )}
+                            
+                            {/* Loading overlay */}
+                            {isLoading && (
+                               <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 backdrop-blur-sm z-50">
+                                   <div className="flex flex-col items-center">
+                                       <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                                       <p className="text-white font-medium">Loading Page...</p>
+                                   </div>
+                               </div>
+                            )}
+
+                             {/* Helper Overlay for Selection Mode */}
+                             {/* Helper Control Panel for Selection Mode */}
+                             {monitorType === 'text' && !priceDetectionEnabled && !isLoading && !selectedElement && (
+                                <div 
+                                    className="absolute z-40 animate-in fade-in slide-in-from-top-4 duration-300 cursor-move"
+                                    style={{ 
+                                        top: `calc(24px + ${floatingOffset.y}px)`, 
+                                        left: `calc(50% + ${floatingOffset.x}px)`,
+                                        transform: 'translateX(-50%)' // Keep initial centering logic, offset applied to left
+                                    }}
+                                    onMouseDown={(e) => {
+                                        if ((e.target as HTMLElement).tagName === 'BUTTON') return; // Don't drag when clicking buttons
+                                        setIsDragging(true);
+                                        setDragStart({ 
+                                            x: e.clientX - floatingOffset.x, 
+                                            y: e.clientY - floatingOffset.y 
+                                        });
+                                    }}
+                                >
+                                    <div className="bg-[#161b22]/95 backdrop-blur-md border border-gray-600 p-1.5 rounded-full shadow-2xl flex items-center w-64 relative select-none">
+                                        {/* Slider Background */}
+                                        <div 
+                                            className={`absolute top-1.5 bottom-1.5 w-[calc(50%-6px)] bg-blue-600 rounded-full transition-all duration-300 ease-spring ${isSelecting ? 'left-1.5' : 'left-[calc(50%+3px)]'}`}
+                                        />
+                                        
+                                        {/* Select Option */}
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setIsSelecting(true); }}
+                                            onMouseDown={(e) => e.stopPropagation()} // Prevent drag start on button
+                                            className={`relative flex-1 py-2 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 z-10 transition-colors ${isSelecting ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
+                                        >
+                                            <MousePointerClick size={14} />
+                                            {t('editor.select')}
+                                        </button>
+                                        
+                                        {/* Interact Option */}
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setIsSelecting(false); }}
+                                            onMouseDown={(e) => e.stopPropagation()} // Prevent drag start on button
+                                            className={`relative flex-1 py-2 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 z-10 transition-colors ${!isSelecting ? 'text-white' : 'text-gray-400 hover:text-gray-200'}`}
+                                        >
+                                            <MousePointerClick size={14} className="rotate-90" />
+                                            {t('editor.interact')}
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Helper Text below pill */}
+                                    <div className="mt-2 text-center pointer-events-none">
+                                        <span className="px-3 py-1 bg-black/50 text-gray-300 text-[10px] rounded-full backdrop-blur-sm border border-white/10">
+                                            {t('editor.tip_drag', 'Drag to move • Toggle to interact')}
+                                        </span>
+                                    </div>
+                                </div>
+                             )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-600">
+                            Loading Preview...
+                        </div>
+                      )}
+                    </div>
+                </div>
+          )}
       </div>
     </div>
   )

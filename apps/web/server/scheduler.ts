@@ -536,12 +536,13 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                 }
                 
                 // Check thresholds
-                if (monitor.price_threshold_min && detectedPrice <= monitor.price_threshold_min) {
+                // Fix: Only alert if price changed AND violates threshold to prevent spam
+                if (monitor.price_threshold_min && detectedPrice <= monitor.price_threshold_min && priceChanged) {
                     priceAlertTriggered = true;
                     priceAlertMessage = `🎯 Price dropped to ${formatPrice(detectedPrice, detectedCurrency)} (below your threshold of ${formatPrice(monitor.price_threshold_min, detectedCurrency)})`;
                     console.log(`[${monitorName}] ${priceAlertMessage}`);
                 }
-                if (monitor.price_threshold_max && detectedPrice >= monitor.price_threshold_max) {
+                if (monitor.price_threshold_max && detectedPrice >= monitor.price_threshold_max && priceChanged) {
                     priceAlertTriggered = true;
                     priceAlertMessage = `⚠️ Price rose to ${formatPrice(detectedPrice, detectedCurrency)} (above your threshold of ${formatPrice(monitor.price_threshold_max, detectedCurrency)})`;
                     console.log(`[${monitorName}] ${priceAlertMessage}`);

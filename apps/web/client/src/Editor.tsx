@@ -719,7 +719,7 @@ function Editor() {
                                         <option value="*/15 * * * *">{t('editor.intervals.15m')}</option>
                                         <option value="*/30 * * * *">{t('editor.intervals.30m')}</option>
                                         <option value="0 * * * *">{t('editor.intervals.1h')}</option>
-                                        <option value="0 */6 * * *">{t('editor.intervals.6h')}</option>
+                                        <option value="0 */8 * * *">{t('editor.intervals.8h')}</option>
                                         <option value="0 */12 * * *">{t('editor.intervals.12h')}</option>
                                         <option value="0 0 * * *">{t('editor.intervals.24h')}</option>
                                     </select>

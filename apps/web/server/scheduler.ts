@@ -87,6 +87,7 @@ const getPublicPath = (...subpaths: string[]): string => {
 // Helper to detect browser/infrastructure errors that should NOT count as monitor failures
 const isBrowserError = (errorMessage: string): boolean => {
     const browserErrorPatterns = [
+        // Browser/Playwright errors
         'Target page, context or browser has been closed',
         'Browser has been closed',
         'context has been closed',
@@ -98,7 +99,22 @@ const isBrowserError = (errorMessage: string): boolean => {
         'Target closed',
         'Session closed',
         'Connection refused',
-        'Browser disconnected'
+        'Browser disconnected',
+        // HTTP 5xx / Infrastructure errors (should not count as monitor failures)
+        'Gateway Timeout',
+        'Bad Gateway',
+        '504',
+        '502',
+        '503',
+        'Service Unavailable',
+        'ERR_TUNNEL_CONNECTION_FAILED',
+        'ETIMEDOUT',
+        'ECONNRESET',
+        'ENOTFOUND',
+        'ECONNREFUSED',
+        'net::ERR_CONNECTION_RESET',
+        'net::ERR_CONNECTION_REFUSED',
+        'net::ERR_NAME_NOT_RESOLVED'
     ];
     return browserErrorPatterns.some(pattern => errorMessage.includes(pattern));
 };
@@ -137,12 +153,22 @@ export const INTERVAL_MINUTES: Record<string, number> = {
     '1h': 60,
     '8h': 480,
     '24h': 1440,
-    '1w': 10080
+    '1w': 10080,
+    // Compat for web editor cron strings
+    '*/1 * * * *': 1,
+    '*/5 * * * *': 5,
+    '*/15 * * * *': 15,
+    '*/30 * * * *': 30, // Normalized
+    '0 * * * *': 60,
+    '0 */6 * * *': 360,
+    '0 */8 * * *': 480,
+    '0 */12 * * *': 720,
+    '0 0 * * *': 1440
 };
 
 // Failure tracking constants
-const MAX_CONSECUTIVE_FAILURES = 5;  // After 5 failures, put monitor in cooldown
-const BASE_COOLDOWN_MINUTES = 60;    // Base cooldown: 60 minutes after max failures
+const MAX_CONSECUTIVE_FAILURES = 8;  // After 8 failures, put monitor in cooldown (increased tolerance)
+const BASE_COOLDOWN_MINUTES = 30;    // Base cooldown: 30 minutes after max failures (faster recovery)
 const MAX_COOLDOWN_MINUTES = 480;    // Max cooldown: 8 hours
 const OVERALL_CHECK_TIMEOUT = 45000; // 45 seconds max per monitor check (reduced from 60s)
 const CONCURRENT_CHECK_LIMIT = 2;    // Max 2 monitors checking at same time
@@ -153,6 +179,8 @@ const checkLimit = pLimit(CONCURRENT_CHECK_LIMIT);
 // Track scheduler health
 let lastSuccessfulCheck = Date.now();
 let schedulerErrors = 0;
+let lastWatchdogNotification = 0; // Rate-limit watchdog emails (1 per hour max)
+const WATCHDOG_NOTIFICATION_COOLDOWN = 60 * 60 * 1000; // 1 hour in ms
 
 export function getSchedulerHealth() {
     return {
@@ -369,6 +397,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
         }
 
         // Wait for selector
+        let selectorVisibilityFailed = false;
         if (monitor.selector && monitor.type === 'text') {
             try {
                 await page.waitForSelector(monitor.selector, { state: 'visible', timeout: 5000 });
@@ -384,78 +413,9 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                     await page.waitForTimeout(1000);
                     await page.waitForTimeout(1000);
                 } catch (e2) {
-                    console.log(`[${monitorName}] Element not found: ${monitor.selector}. Checking eligibility for Self-Healing...`);
-
-                    // Check if page failed to load properly (HTTP Error) - Do not heal on 404/500
-                    if (httpStatus && httpStatus >= 400) {
-                         console.log(`[${monitorName}] HTTP ${httpStatus} detected - Skipping Self-Healing.`);
-                    } else if (monitor.suggested_selector) {
-                         console.log(`[${monitorName}] Pending suggestion exists (${monitor.suggested_selector}) - Skipping new AI analysis.`);
-                    } else {
-                        // Check browser/page health before attempting self-healing
-                        try {
-                            if (page.isClosed()) {
-                                console.log(`[${monitorName}] Page closed, skipping self-healing`);
-                                throw new Error('Page closed during check');
-                            }
-                            
-                            const htmlSnapshot = await Promise.race([
-                                page.evaluate(() => {
-                                    const clone = document.body.cloneNode(true) as HTMLElement;
-                                    const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
-                                    toRemove.forEach(el => el.remove());
-                                    return clone.outerHTML;
-                                }),
-                                new Promise<string>((_, reject) => 
-                                    setTimeout(() => reject(new Error('HTML snapshot timeout')), 10000)
-                                )
-                            ]);
-
-                            const newSelector = await findSelector(htmlSnapshot, monitor.selector, monitor.last_value || '', monitor.ai_prompt || null);
-
-                            if (newSelector) {
-                                console.log(`[${monitorName}] 🩹 AI Healed Selector: "${newSelector}"`);
-
-                                // Check page still alive
-                                if (page.isClosed()) {
-                                    console.log(`[${monitorName}] Page closed during healing, aborting`);
-                                    throw new Error('Page closed during healing');
-                                }
-                                
-                                const verified = await page.$(newSelector);
-                                if (verified) {
-                                    console.log(`[${monitorName}] Verified new selector works. Saving suggestion...`);
-
-                                    db.run(`UPDATE monitors SET suggested_selector = ? WHERE id = ?`, [newSelector, monitor.id]);
-
-                                    // Get language setting for translated notification
-                                    const lang = await getLanguage();
-                                    
-                                    // Use APP_URL from environment variable (remove trailing slash if present)
-                                    const baseUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
-                                    const dashboardLink = baseUrl ? `${baseUrl}/monitor/${monitor.id}` : `/monitor/${monitor.id}`;
-                                    
-                                    const plainText = `${t('selector_broken', lang)}: "${newSelector}".\n\n${t('approve_in_dashboard', lang)}:\n${dashboardLink}`;
-                                    const htmlMessage = `<p>${t('selector_broken', lang)}:</p><pre>${newSelector}</pre><p><a href="${dashboardLink}" style="display:inline-block;padding:10px 20px;background-color:#238636;color:white;text-decoration:none;border-radius:6px;margin-top:10px;">${t('review_approve', lang)}</a></p>`;
-                                    
-                                    sendNotification(
-                                        `${t('action_required', lang)}: ${monitorName}`,
-                                        plainText,
-                                        htmlMessage, null, null
-                                    );
-                                } else {
-                                    console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
-                                }
-                            }
-                        } catch (healErr: any) {
-                            // Check if it's a browser/page closed error - don't log as full error
-                            if (healErr.message?.includes('closed') || healErr.message?.includes('Target')) {
-                                console.log(`[${monitorName}] Self-Healing skipped: browser/page closed`);
-                            } else {
-                                console.error(`[${monitorName}] Self-Healing Failed:`, healErr.message);
-                            }
-                        }
-                    }
+                    // Mark for potential healing later, but don't trigger yet
+                    selectorVisibilityFailed = true;
+                    console.log(`[${monitorName}] Selector visibility check failed. Will evaluate after content extraction.`);
                 }
             }
         }
@@ -504,6 +464,60 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
 
             if (text === null) {
                 console.warn(`[${monitorName}] Element not found after ${maxRetries} attempts`);
+                
+                // NOW trigger AI Self-Healing (only if content extraction truly failed)
+                if (selectorVisibilityFailed && !monitor.suggested_selector && (!httpStatus || httpStatus < 400)) {
+                    console.log(`[${monitorName}] Content extraction failed. Triggering AI Self-Healing...`);
+                    try {
+                        if (!page.isClosed()) {
+                            const htmlSnapshot = await Promise.race([
+                                page.evaluate(() => {
+                                    const clone = document.body.cloneNode(true) as HTMLElement;
+                                    const toRemove = clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta');
+                                    toRemove.forEach(el => el.remove());
+                                    return clone.outerHTML;
+                                }),
+                                new Promise<string>((_, reject) => 
+                                    setTimeout(() => reject(new Error('HTML snapshot timeout')), 10000)
+                                )
+                            ]);
+
+                            const newSelector = await findSelector(htmlSnapshot, monitor.selector, monitor.last_value || '', monitor.ai_prompt || null);
+
+                            if (newSelector && !page.isClosed()) {
+                                console.log(`[${monitorName}] 🩹 AI Healed Selector: "${newSelector}"`);
+                                
+                                const verified = await page.$(newSelector);
+                                if (verified) {
+                                    console.log(`[${monitorName}] Verified new selector works. Saving suggestion...`);
+
+                                    db.run(`UPDATE monitors SET suggested_selector = ? WHERE id = ?`, [newSelector, monitor.id]);
+
+                                    const lang = await getLanguage();
+                                    const baseUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
+                                    const dashboardLink = baseUrl ? `${baseUrl}/monitor/${monitor.id}` : `/monitor/${monitor.id}`;
+                                    
+                                    const plainText = `${t('selector_broken', lang)}: "${newSelector}".\n\n${t('approve_in_dashboard', lang)}:\n${dashboardLink}`;
+                                    const htmlMessage = `<p>${t('selector_broken', lang)}:</p><pre>${newSelector}</pre><p><a href="${dashboardLink}" style="display:inline-block;padding:10px 20px;background-color:#238636;color:white;text-decoration:none;border-radius:6px;margin-top:10px;">${t('review_approve', lang)}</a></p>`;
+                                    
+                                    sendNotification(
+                                        `${t('action_required', lang)}: ${monitorName}`,
+                                        plainText,
+                                        htmlMessage, null, null
+                                    );
+                                } else {
+                                    console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
+                                }
+                            }
+                        }
+                    } catch (healErr: any) {
+                        if (healErr.message?.includes('closed') || healErr.message?.includes('Target')) {
+                            console.log(`[${monitorName}] Self-Healing skipped: browser/page closed`);
+                        } else {
+                            console.error(`[${monitorName}] Self-Healing Failed:`, healErr.message);
+                        }
+                    }
+                }
             } else {
                 const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
                 console.log(`[${monitorName}] Extracted value (${text.length} chars): "${preview}"`);
@@ -547,6 +561,9 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                     priceAlertMessage = `⚠️ Price rose to ${formatPrice(detectedPrice, detectedCurrency)} (above your threshold of ${formatPrice(monitor.price_threshold_max, detectedCurrency)})`;
                     console.log(`[${monitorName}] ${priceAlertMessage}`);
                 }
+                
+                // Override the text content with the formatted price so history shows the price
+                text = formatPrice(detectedPrice, detectedCurrency);
             } else {
                 console.log(`[${monitorName}] No price detected on page`);
             }
@@ -958,12 +975,12 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
 
     } catch (error: any) {
         console.error(`[${monitorName}] Error:`, error.message);
-        db.run(`INSERT INTO check_history (monitor_id, status, response_time, created_at, value) VALUES (?, ?, ?, ?, ?)`, [monitor.id, 'error', 0, new Date().toISOString(), error.message]);
-        // Only increment consecutive failures for non-browser errors
+        
         if (!isBrowserError(error.message)) {
+            db.run(`INSERT INTO check_history (monitor_id, status, response_time, created_at, value) VALUES (?, ?, ?, ?, ?)`, [monitor.id, 'error', 0, new Date().toISOString(), error.message]);
             db.run(`UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?`, [new Date().toISOString(), monitor.id]);
         } else {
-            console.log(`[${monitorName}] Browser/infrastructure error - not counting as failure`);
+            console.log(`[${monitorName}] Browser/infrastructure error - skipping history log and failure count`);
             db.run(`UPDATE monitors SET last_check = ? WHERE id = ?`, [new Date().toISOString(), monitor.id]);
         }
     } finally {
@@ -1150,17 +1167,23 @@ async function watchdogCheck(): Promise<void> {
                         } else {
                             console.log('[WATCHDOG] ✅ All cooldowns have been reset');
                             
-                            // Send notification about recovery
-                            sendNotification(
-                                '🔄 DeltaWatch Auto-Recovery',
-                                `${monitorsInCooldown}/${totalActiveMonitors} monitors exceeded the ${threshold}% cooldown threshold. The system has automatically reset all failure counters to resume monitoring.`,
-                                `<h2>🔄 Auto-Recovery Triggered</h2>
-                                <p><strong>${monitorsInCooldown}/${totalActiveMonitors}</strong> monitors exceeded the ${threshold}% cooldown threshold.</p>
-                                <p>The watchdog has automatically reset all failure counters to resume normal monitoring.</p>
-                                <p><small>Sent by DeltaWatch Watchdog</small></p>`,
-                                null,
-                                null
-                            );
+                            // Send notification about recovery (rate-limited to 1 per hour)
+                            const notifyNow = Date.now();
+                            if (notifyNow - lastWatchdogNotification > WATCHDOG_NOTIFICATION_COOLDOWN) {
+                                lastWatchdogNotification = notifyNow;
+                                sendNotification(
+                                    '🔄 DeltaWatch Auto-Recovery',
+                                    `${monitorsInCooldown}/${totalActiveMonitors} monitors exceeded the ${threshold}% cooldown threshold. The system has automatically reset all failure counters to resume monitoring.`,
+                                    `<h2>🔄 Auto-Recovery Triggered</h2>
+                                    <p><strong>${monitorsInCooldown}/${totalActiveMonitors}</strong> monitors exceeded the ${threshold}% cooldown threshold.</p>
+                                    <p>The watchdog has automatically reset all failure counters to resume normal monitoring.</p>
+                                    <p><small>Sent by DeltaWatch Watchdog</small></p>`,
+                                    null,
+                                    null
+                                );
+                            } else {
+                                console.log('[WATCHDOG] Notification skipped (rate-limited, 1 per hour max)');
+                            }
                         }
                         resolve();
                     });

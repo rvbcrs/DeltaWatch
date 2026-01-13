@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo } from 'react';
 import { cleanValue } from '@deltawatch/shared';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import { useAuth } from './contexts/AuthContext';
+import { useToast } from './contexts/ToastContext';
 import { useNavigate } from 'react-router-dom';
-import { X, Clock, AlertTriangle, CheckCircle, Wifi, Monitor } from 'lucide-react';
+import { X, Clock, AlertTriangle, CheckCircle, Wifi, Monitor, Cast } from 'lucide-react';
 import { LineChart, Line, YAxis, ResponsiveContainer, LabelList } from 'recharts';
 import { useTranslation } from 'react-i18next';
 
@@ -98,6 +99,7 @@ export default function KioskMode() {
     const [progress, setProgress] = useState(0);
     const { authFetch } = useAuth();
     const navigate = useNavigate();
+    const { showToast } = useToast();
     const API_BASE = '';
     
     // Configuration
@@ -105,7 +107,23 @@ export default function KioskMode() {
     const REFRESH_INTERVAL = 100; // Update progress bar every 100ms
 
     useEffect(() => {
+        document.title = "DeltaWatch";
         fetchMonitors();
+
+        // Setup Media Session for rich Cast metadata
+        if ('mediaSession' in navigator) {
+            // @ts-ignore
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: 'Kiosk Dashboard',
+                artist: 'DeltaWatch',
+                album: 'Live Monitor',
+                artwork: [
+                    { src: window.location.origin + '/logo_512.png', sizes: '512x512', type: 'image/png' },
+                    { src: window.location.origin + '/logo_192.png', sizes: '192x192', type: 'image/png' }
+                ]
+            });
+        }
+
         // Clock
         const clockInterval = setInterval(() => setTime(new Date()), 1000);
         return () => clearInterval(clockInterval);
@@ -153,6 +171,42 @@ export default function KioskMode() {
         setCurrentIndex(prev => (prev + 1) % monitors.length);
     };
 
+    const handleCast = async (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Google Cast SDK
+        // @ts-ignore
+        if (window.cast && window.cast.framework) {
+             try {
+                 // @ts-ignore
+                 await cast.framework.CastContext.getInstance().requestSession();
+                 return;
+             } catch (e: any) {
+                 if (e !== 'cancel') {
+                    console.error("Cast Error", e);
+                 }
+             }
+        }
+
+        // Attempt to use Presentation API for Chrome Casting (Fallback)
+        // @ts-ignore
+        if (window.PresentationRequest) {
+            try {
+                // @ts-ignore
+                const request = new PresentationRequest([window.location.href]);
+                // @ts-ignore
+                await request.start();
+            } catch (e) {
+                console.log("Cast failed or cancelled", e);
+                showToast(t('kiosk.cast_guide', 'Gebuik het browser menu om te casten'), 'info');
+            }
+        } else {
+             // Fallback for AirPlay/Other (No direct API for AirPlay from generic web)
+             showToast("Gebruik AirPlay/Cast via je browser menu of systeeminstellingen.", 'info');
+        }
+    };
+
     if (loading) return <div className="min-h-screen bg-black text-white flex items-center justify-center">Loading Kiosk...</div>;
     if (monitors.length === 0) return (
         <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-4">
@@ -173,11 +227,17 @@ export default function KioskMode() {
     }).length;
 
     return (
-        <div className="fixed inset-0 bg-[#0d1117] text-white flex flex-col overflow-hidden z-50">
+        <div 
+            className="fixed inset-0 bg-[#0d1117] text-white flex flex-col overflow-hidden z-50 bg-cover bg-center"
+            style={{ backgroundImage: "url('/bg_image_2.png')" }}
+        >
+            {/* Dark Overlay for readability */}
+            <div className="absolute inset-0 bg-black/60 z-0" />
+
             {/* Header */}
-            <header className="h-16 bg-[#161b22] border-b border-gray-800 flex items-center justify-between px-6 shadow-lg z-20">
+            <header className="h-16 bg-[#161b22]/80 backdrop-blur-md border-b border-gray-800 flex items-center justify-between px-6 shadow-lg z-20 relative">
                 <div className="flex items-center gap-4">
-                    <img src="/logo_128.png" alt="Logo" className="w-8 h-8" />
+                    <img src="/logo_new.png" alt="Logo" className="w-8 h-8" />
                     <h1 className="text-xl font-bold tracking-tight">DeltaWatch Kiosk</h1>
                     
                     <div className="h-6 w-px bg-gray-700 mx-2"></div>
@@ -201,6 +261,15 @@ export default function KioskMode() {
                         <Clock size={16} />
                         {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
+                    
+                    <button 
+                        onClick={handleCast}
+                        className="p-2 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 hover:text-blue-200 rounded-full transition-colors border border-blue-500/30"
+                        title="Cast to TV"
+                    >
+                        <Cast size={20} />
+                    </button>
+
                     <button 
                         onClick={() => navigate('/')}
                         className="p-2 hover:bg-gray-800 rounded-full text-gray-400 hover:text-white transition-colors"
@@ -214,7 +283,7 @@ export default function KioskMode() {
             {/* Main Content */}
             <main className="flex-1 relative flex">
                 {/* Current Slide */}
-                <div className="flex-1 p-8 flex flex-col items-center justify-center relative bg-gradient-to-br from-[#0d1117] to-[#161b22]">
+                <div className="flex-1 p-8 flex flex-col items-center justify-center relative">
                     
                     {currentMonitor.type === 'visual' ? (
                          currentMonitor.last_screenshot ? (
@@ -236,7 +305,7 @@ export default function KioskMode() {
                             </div>
                         )
                     ) : (
-                        <div className="w-full max-w-4xl bg-[#161b22] rounded-2xl border border-gray-700 p-12 shadow-2xl flex flex-col items-center text-center gap-8 relative overflow-hidden">
+                        <div className="w-full max-w-4xl bg-[#161b22]/80 backdrop-blur-md rounded-2xl border border-gray-700 p-12 shadow-2xl flex flex-col items-center text-center gap-8 relative overflow-hidden">
                             <div className={`p-6 rounded-full ${isUp ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'} z-10 relative`}>
                                 <Wifi size={64} />
                             </div>
@@ -273,7 +342,7 @@ export default function KioskMode() {
             </main>
 
             {/* Footer / Progress */}
-            <footer className="h-20 bg-[#161b22] border-t border-gray-800 flex items-center px-8 relative overflow-hidden">
+            <footer className="h-20 bg-[#161b22]/80 backdrop-blur-md border-t border-gray-800 flex items-center px-8 relative overflow-hidden z-20">
                 <div className="absolute top-0 left-0 h-1 bg-blue-600 transition-all duration-100 ease-linear shadow-[0_0_10px_rgba(37,99,235,0.5)]" style={{ width: `${progress}%` }}></div>
                 
                 <div className="flex-1 flex items-center gap-4">

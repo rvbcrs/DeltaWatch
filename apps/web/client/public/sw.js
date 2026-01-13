@@ -1,5 +1,5 @@
 // DeltaWatch Service Worker
-const CACHE_NAME = 'deltawatch-v4';
+const CACHE_NAME = 'deltawatch-v5';
 const STATIC_ASSETS = [
     '/',
     '/manifest.json',

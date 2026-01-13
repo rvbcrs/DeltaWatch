@@ -101,6 +101,7 @@ export function getStatusColor(status) {
 export function formatCronInterval(cron) {
     if (!cron)
         return null;
+    const normalizedKey = cron.trim().replace(/\s+/g, ' ');
     const map = {
         '* * * * *': '1m',
         '*/5 * * * *': '5m',
@@ -113,5 +114,5 @@ export function formatCronInterval(cron) {
         '0 0 * * *': '24h',
         '0 0 * * 0': '1w'
     };
-    return map[cron.trim()] || null;
+    return map[normalizedKey] || null;
 }

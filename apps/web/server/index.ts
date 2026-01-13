@@ -114,6 +114,135 @@ app.get('/api/intervals', async (req: Request, res: Response) => {
     res.json({ intervals: Object.keys(INTERVAL_MINUTES) });
 });
 
+// Platform Detection API - analyzes a URL and suggests the best template
+app.post('/api/detect-platform', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+    const { url } = req.body;
+    
+    if (!url) {
+        return res.status(400).json({ error: 'URL is required' });
+    }
+    
+    try {
+        const { acquireBrowser } = await import('./browserPool');
+        let pooledContext: { context: BrowserContext; release: () => Promise<void> } | null = null;
+        let page: Page | null = null;
+        
+        try {
+            pooledContext = await acquireBrowser();
+            page = await pooledContext.context.newPage();
+            
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            
+            // Analyze page for platform signatures
+            const detection = await page.evaluate(() => {
+                const html = document.documentElement.outerHTML.toLowerCase();
+                const head = document.head.innerHTML.toLowerCase();
+                
+                // Platform detection patterns
+                const patterns = {
+                    shopify: [
+                        /shopify\.com/i.test(html),
+                        /cdn\.shopify\.com/i.test(html),
+                        !!document.querySelector('[data-shopify]'),
+                        !!document.querySelector('.shopify-section'),
+                        /\/cdn\/shop\//i.test(html),
+                    ],
+                    woocommerce: [
+                        /woocommerce/i.test(html),
+                        !!document.querySelector('.woocommerce'),
+                        !!document.querySelector('.wc-block'),
+                        /wp-content\/plugins\/woocommerce/i.test(html),
+                    ],
+                    amazon: [
+                        /amazon\.(com|nl|de|co\.uk|fr|es|it)/i.test(window.location.hostname),
+                        !!document.querySelector('#dp-container'),
+                        !!document.querySelector('#productTitle'),
+                    ],
+                    wordpress: [
+                        /wp-content/i.test(html),
+                        /wordpress/i.test(head),
+                        !!document.querySelector('.wp-block'),
+                    ],
+                    magento: [
+                        /magento/i.test(html),
+                        !!document.querySelector('.page-wrapper'),
+                        /mage\//i.test(html),
+                    ],
+                };
+                
+                // Check for product page indicators
+                const isProductPage = !!(
+                    document.querySelector('[itemtype*="Product"]') ||
+                    document.querySelector('[data-product]') ||
+                    document.querySelector('.product-single') ||
+                    document.querySelector('.product-details') ||
+                    document.querySelector('#product') ||
+                    /product|item|artikel/i.test(window.location.pathname)
+                );
+                
+                // Check for price on page
+                const hasPrice = !!(
+                    document.querySelector('[class*="price"]') ||
+                    document.querySelector('[data-price]') ||
+                    document.body.textContent?.match(/[€$£¥]\s*[\d,.]+/)
+                );
+                
+                // Score each platform
+                const scores: Record<string, number> = {};
+                for (const [platform, checks] of Object.entries(patterns)) {
+                    scores[platform] = checks.filter(Boolean).length;
+                }
+                
+                // Find best match
+                const bestPlatform = Object.entries(scores)
+                    .filter(([_, score]) => score > 0)
+                    .sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+                
+                return {
+                    platform: bestPlatform,
+                    scores,
+                    isProductPage,
+                    hasPrice,
+                    title: document.title,
+                };
+            });
+            
+            // Map platform to template recommendation
+            let recommendedTemplate = 'custom';
+            if (detection.hasPrice && detection.isProductPage) {
+                recommendedTemplate = 'price';
+            } else if (detection.platform === 'shopify') {
+                recommendedTemplate = 'shopify';
+            } else if (detection.platform === 'woocommerce') {
+                recommendedTemplate = 'woocommerce';
+            } else if (detection.platform === 'amazon') {
+                recommendedTemplate = 'amazon';
+            } else if (detection.platform === 'wordpress' && !detection.isProductPage) {
+                recommendedTemplate = 'news';
+            }
+            
+            res.json({
+                message: 'success',
+                detection: {
+                    ...detection,
+                    recommendedTemplate,
+                }
+            });
+            
+        } finally {
+            if (page) await page.close();
+            if (pooledContext) await pooledContext.release();
+        }
+    } catch (error: any) {
+        console.error('[Platform Detection] Error:', error.message);
+        res.status(500).json({ 
+            error: 'Failed to detect platform', 
+            details: error.message,
+            recommendedTemplate: 'custom'
+        });
+    }
+});
+
 // Global Request Logger
 app.use((req: Request, res: Response, next: NextFunction) => {
     console.log(`[Request] ${req.method} ${req.url}`);

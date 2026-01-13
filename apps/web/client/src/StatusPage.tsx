@@ -65,9 +65,13 @@ function StatusPage() {
         : 'bg-orange-500';
 
     return (
-        <div className="min-h-screen bg-[#0d1117] text-gray-300 font-sans selection:bg-green-500/30">
+        <div 
+            className="min-h-screen bg-[#0d1117] text-gray-300 font-sans selection:bg-green-500/30 bg-cover bg-center"
+            style={{ backgroundImage: "url('/bg_image_1.png')" }}
+        >
+            <div className="absolute inset-0 bg-black/60 z-0 text-gray-300 font-sans selection:bg-green-500/30"></div>
             {/* Header */}
-            <header className="bg-[#161b22] border-b border-gray-800 py-6 px-4 shadow-sm">
+            <header className="bg-[#161b22]/80 backdrop-blur-md border-b border-gray-800 py-6 px-4 shadow-sm relative z-10">
                 <div className="max-w-4xl mx-auto flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <Server className="w-8 h-8 text-green-500" />
@@ -82,7 +86,7 @@ function StatusPage() {
                 </div>
             </header>
 
-            <main className="max-w-4xl mx-auto px-4 py-8">
+            <main className="max-w-4xl mx-auto px-4 py-8 relative z-10">
                 {/* Overall Status Banner */}
                 <div className={`${overallColor} text-white p-4 rounded-lg shadow-lg mb-8 flex items-center justify-center font-medium`}>
                     {overallStatus}
@@ -94,7 +98,7 @@ function StatusPage() {
                         <div className="text-center py-10 text-gray-500">Loading status...</div>
                     ) : (
                         monitors.map(monitor => (
-                            <div key={monitor.id} className="bg-[#161b22] border border-gray-800 rounded-lg p-4 flex items-center justify-between hover:border-gray-700 transition-all">
+                            <div key={monitor.id} className="bg-[#161b22]/80 backdrop-blur-md border border-gray-800 rounded-lg p-4 flex items-center justify-between hover:border-gray-700 transition-all shadow-md">
                                 <div>
                                     <h3 className="text-white font-medium text-lg">{monitor.name}</h3>
                                     <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
@@ -114,8 +118,8 @@ function StatusPage() {
                 </div>
             </main>
 
-            <footer className="max-w-4xl mx-auto px-4 py-8 text-center text-sm text-gray-600 border-t border-gray-800 mt-8">
-                Powered by <span className="text-gray-500 font-semibold">DeltaWatch</span>
+            <footer className="max-w-4xl mx-auto px-4 py-8 text-center text-sm text-gray-400/80 border-t border-gray-800/50 mt-8 relative z-10">
+                Powered by <span className="text-gray-300 font-semibold">DeltaWatch</span>
             </footer>
         </div>
     );

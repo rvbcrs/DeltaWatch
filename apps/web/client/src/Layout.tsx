@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Settings, Radar, Menu, X, LogOut, User } from 'lucide-react'
+import { LayoutDashboard, Settings, Menu, X, LogOut, User } from 'lucide-react'
 import { useAuth } from './contexts/AuthContext'
 import { useTranslation } from 'react-i18next'
 
@@ -47,8 +47,9 @@ function Layout({ children }: LayoutProps) {
         </button>
 
         {/* Logo */}
+        {/* Logo */}
         <Link to="/" className="flex items-center gap-3">
-          <Radar className="text-green-500" size={28} />
+          <img src="/logo_new.png" alt="DeltaWatch Logo" className="w-12 h-12" />
           <span className="font-bold text-xl">DeltaWatch</span>
         </Link>
       </header>

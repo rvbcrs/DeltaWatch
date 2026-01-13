@@ -1,9 +1,9 @@
 // Editor doesn't use Layout! Removing the import which is causing issues.
-import { useRef, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from './contexts/ToastContext';
-import { MousePointerClick, Save, Play, Clock, ArrowLeft, Trash2, Sliders, AlertTriangle, CheckCircle, RotateCcw, ScanEye, FileText, Type, MousePointer2, Smartphone, Image as ImageIcon } from 'lucide-react';
+import { MousePointerClick, ArrowLeft, ScanEye, FileText, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
 
 interface SelectedElement {
@@ -60,6 +60,7 @@ function Editor() {
 
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
 
   // Floating Panel Drag State
   const [floatingOffset, setFloatingOffset] = useState({ x: 0, y: 0 });
@@ -297,6 +298,7 @@ function Editor() {
     }
     
     try {
+        setIsSaving(true);
         const urlParams = id ? `/${id}` : '';
         const method = id ? 'PUT' : 'POST';
         
@@ -333,6 +335,8 @@ function Editor() {
     } catch (e) {
         console.error(e);
         showToast(t('editor.toasts.save_error', { error: e instanceof Error ? e.message : 'Unknown error' }), 'error');
+    } finally {
+        setIsSaving(false);
     }
   }
 
@@ -455,6 +459,7 @@ function Editor() {
     setIsLoading(false);
   };
 
+  // URL is now always the first step. Templates are auto-detected for price monitors.
   const [step, setStep] = useState<'url' | 'type' | 'config'>('url');
   
   // Effect to automatically advance step if editing existing monitor
@@ -464,11 +469,54 @@ function Editor() {
       }
   }, [id, url, monitorType]);
 
+  const [isDetecting, setIsDetecting] = useState(false);
+
   const handleUrlSubmit = () => {
-      if (url) {
-          handleGo();
-          setStep('type');
+      if (!url) return;
+      handleGo();
+      // Always go to type selection first
+      setStep('type');
+  };
+  
+  // Platform detection happens when user selects Price Detection
+  const handlePriceTypeSelected = async () => {
+      setMonitorType('price');
+      setPriceDetectionEnabled(true);
+      
+      // Auto-detect platform for price monitors
+      setIsDetecting(true);
+      try {
+          const response = await authFetch(`${API_BASE}/api/detect-platform`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url })
+          });
+          
+          if (response.ok) {
+              const data = await response.json();
+              const platform = data.detection?.platform;
+              const recommended = data.detection?.recommendedTemplate;
+              
+              if (platform && recommended) {
+                  // Find the template and apply settings
+                  const { MONITOR_TEMPLATES } = await import('./components/TemplateSelector');
+                  const template = MONITOR_TEMPLATES.find(t => t.id === recommended);
+                  
+                  if (template) {
+                      if (template.interval) {
+                          setIntervalValue(template.interval);
+                      }
+                      showToast(`Detected: ${platform} - optimized settings applied`, 'success');
+                  }
+              }
+          }
+      } catch (err) {
+          console.log('[Editor] Platform detection failed, using default settings');
+      } finally {
+          setIsDetecting(false);
       }
+      
+      setStep('config');
   };
 
   return (
@@ -495,11 +543,11 @@ function Editor() {
           {step === 'config' && (
               <button 
                   onClick={handleSave}
-                  disabled={!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)}
-                  className={`px-6 py-2 rounded-lg font-bold transition flex items-center gap-2 ${(!url || !proxyUrl || isLoading || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-[#238636] text-white hover:bg-[#2ea043] shadow-lg hover:shadow-green-900/20'}`}
+                  disabled={!url || !proxyUrl || isLoading || isSaving || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)}
+                  className={`px-6 py-2 rounded-lg font-bold transition flex items-center gap-2 ${(!url || !proxyUrl || isLoading || isSaving || (monitorType === 'text' && !selectedElement && !priceDetectionEnabled)) ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-[#238636] text-white hover:bg-[#2ea043] shadow-lg hover:shadow-green-900/20'}`}
               >
-                  {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : null}
-                  {t('editor.save')}
+                  {isLoading || isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : null}
+                  {isSaving ? t('editor.saving') : t('editor.save')}
               </button>
           )}
       </header>
@@ -520,20 +568,28 @@ function Editor() {
                             className="flex-1 p-4 bg-[#0d1117] border border-gray-700 text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-lg placeholder-gray-600 transition-all"
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleUrlSubmit()}
+                            onKeyDown={(e) => e.key === 'Enter' && !isDetecting && handleUrlSubmit()}
                             autoFocus
+                            disabled={isDetecting}
                           />
                           <button 
                             onClick={handleUrlSubmit}
-                            disabled={!url}
-                            className={`px-8 rounded-xl font-bold text-lg transition-all transform active:scale-95 ${!url ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg hover:shadow-blue-900/20'}`}
+                            disabled={!url || isDetecting}
+                            className={`px-8 rounded-xl font-bold text-lg transition-all transform active:scale-95 flex items-center gap-2 ${(!url || isDetecting) ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg hover:shadow-blue-900/20'}`}
                           >
-                            Go
+                            {isDetecting ? (
+                                <>
+                                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                    Detecting...
+                                </>
+                            ) : 'Go'}
                           </button>
                       </div>
                       <div className="mt-6 flex justify-center">
                           <p className="text-gray-500 text-sm">
-                              Enter the full URL of the page you want to track.
+                              {isDetecting 
+                                  ? 'Analyzing page to find the best template...' 
+                                  : 'Enter the full URL of the page you want to track.'}
                           </p>
                       </div>
                   </div>
@@ -572,15 +628,24 @@ function Editor() {
 
                             {/* PRICE MONITOR */}
                             <button 
-                                onClick={() => { setMonitorType('price'); setStep('config'); }}
-                                className="group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-emerald-500 transition-all text-left shadow-lg hover:shadow-emerald-900/10"
+                                onClick={handlePriceTypeSelected}
+                                disabled={isDetecting}
+                                className={`group relative bg-[#161b22] hover:bg-[#1c2128] p-8 rounded-2xl border border-gray-700 hover:border-emerald-500 transition-all text-left shadow-lg hover:shadow-emerald-900/10 ${isDetecting ? 'opacity-75 cursor-wait' : ''}`}
                             >
                                 <div className="absolute top-6 right-6 p-3 bg-emerald-900/20 rounded-xl text-emerald-400 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
-                                    <span>💰</span>
+                                    {isDetecting ? (
+                                        <div className="w-6 h-6 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+                                    ) : (
+                                        <span>💰</span>
+                                    )}
                                 </div>
-                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-emerald-400 transition-colors">Price Detection</h3>
+                                <h3 className="text-xl font-bold text-white mb-2 group-hover:text-emerald-400 transition-colors">
+                                    {isDetecting ? 'Detecting Platform...' : 'Price Detection'}
+                                </h3>
                                 <p className="text-gray-400 text-sm leading-relaxed">
-                                    Automatically detect and track product prices. Get notified on price drops or increases.
+                                    {isDetecting 
+                                        ? 'Analyzing page for Shopify, WooCommerce, Amazon...' 
+                                        : 'Automatically detect and track product prices. Get notified on price drops or increases.'}
                                 </p>
                             </button>
 

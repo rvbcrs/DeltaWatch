@@ -33,6 +33,43 @@ DeltaWatch/
 - **Text Monitoring** - Extract and track text content using CSS selectors
 - **Full Page Monitoring** - Track entire page content changes
 - **Visual Monitoring** - Screenshot comparison with pixel-level diff detection
+- **Price Monitoring** - Automatic price detection with threshold alerts
+
+### Monitor Templates
+
+When creating a new monitor, you can choose from pre-configured templates:
+
+| Template | Best For | Description |
+|----------|----------|-------------|
+| 💰 **Price Tracker** | Any webshop | Automatically finds and tracks product prices using AI detection. No manual selection needed. |
+| 🛒 **Shopify Store** | Shopify sites | Pre-configured selectors for Shopify-powered webshops (price, stock, title). |
+| 📦 **WooCommerce** | WordPress shops | Optimized for WordPress sites using WooCommerce plugin. |
+| 🛒 **Amazon** | Amazon products | Specialized selectors for Amazon product pages with rate-limit aware intervals. |
+| 📰 **News / Blog** | Content sites | Track headlines, articles, and blog posts for new publications. |
+| 🖼️ **Visual Screenshot** | Any webpage | Full-page screenshot comparison with pixel-level diff detection. |
+| ⚡ **Custom Element** | Everything else | Maximum flexibility - visually select any element on any page. |
+
+#### When to use which template?
+
+**Price Tracker** 💰
+- Use when: You want to track a product price on any e-commerce site
+- Example: Track iPhone price on MediaMarkt → Get notified when it drops below €999
+- How it works: AI scans the page and automatically finds the price
+
+**Shopify / WooCommerce** 🛒
+- Use when: You need to track stock status or specific elements on those platforms
+- Example: Monitor "Sold Out" text → Get notified when product is back in stock
+- How it works: Uses platform-specific CSS selectors for reliable extraction
+
+**Visual Screenshot** 🖼️
+- Use when: You need to detect ANY visual change (layout, images, design)
+- Example: Monitor competitor homepage → See highlighted diff when they update
+- How it works: Takes a screenshot, compares pixel-by-pixel with previous version
+
+**Custom Element** ⚡
+- Use when: None of the above fit your needs
+- Example: Track a specific paragraph on a government website
+- How it works: You visually select exactly what to track
 
 ### Apps
 - **Web Dashboard** - Full-featured React web application

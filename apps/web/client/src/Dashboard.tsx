@@ -10,6 +10,7 @@ import { timeAgo, formatDate, type HistoryRecord, formatCronInterval } from '@de
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { Sparkline } from './components/Sparkline'
 
 // Sortable wrapper component for drag & drop
 function SortableItem({ id, children }: { id: number; children: React.ReactNode }) {
@@ -53,6 +54,7 @@ interface Monitor {
     interval: string;
     active: boolean;
     last_check?: string;
+    last_value?: string;
     last_screenshot?: string;
     tags?: string;
     sort_order?: number;
@@ -341,9 +343,22 @@ const Dashboard = () => {
 
 
 
-  const allTags = [...new Set(monitors.flatMap(m => {
+  // Robust tag calculation with count filtering to prevent ghost tags
+  const tagsWithCounts = [...new Set(monitors.flatMap(m => {
     try { return JSON.parse(m.tags || '[]') as string[]; } catch { return []; }
-  }))].filter(t => t && typeof t === 'string' && t.trim().length > 0).sort();
+  }))]
+  .filter(t => t && typeof t === 'string' && t.trim().length > 0)
+  .map(tag => ({
+      tag,
+      count: monitors.filter(m => { 
+          try { return (JSON.parse(m.tags || '[]') as string[]).includes(tag); } 
+          catch { return false; }
+      }).length
+  }))
+  .filter(x => x.count > 0)
+  .sort((a, b) => a.tag.localeCompare(b.tag));
+
+  const allTags = tagsWithCounts.map(t => t.tag);
 
   const filteredMonitors = monitors.filter(m => {
       // Filter by status (from stats tiles)
@@ -453,8 +468,10 @@ const Dashboard = () => {
                     </div>
                     
                     {monitor.type === 'text' && (
-                        <p className="text-gray-400 text-sm truncate" title={monitor.selector_text}>
-                            {monitor.selector_text || 'No selector text'}
+                        <p className="text-gray-400 text-sm truncate" title={monitor.last_value || monitor.selector_text}>
+                            {monitor.price_detection_enabled && monitor.detected_price && monitor.detected_price > 0
+                                ? new Intl.NumberFormat('nl-NL', { style: 'currency', currency: monitor.detected_currency || 'EUR' }).format(monitor.detected_price)
+                                : (monitor.last_value || monitor.selector_text || (monitor.last_check ? 'No content found' : 'Waiting for first check...'))}
                         </p>
                     )}
                     <p className="text-gray-500 text-xs truncate font-mono">
@@ -465,7 +482,17 @@ const Dashboard = () => {
 
             <div className="flex items-center justify-between md:justify-end gap-4 md:gap-6 mt-4 md:mt-0 w-full md:w-auto border-t md:border-t-0 border-gray-800 pt-3 md:pt-0">
                     <div className="text-left md:text-right">
-                    <div className="flex items-center gap-1 justify-start md:justify-end mb-1">
+                    <div className="flex items-center gap-2 justify-start md:justify-end mb-1">
+                        {/* Sparkline trend chart - auto-hides if no numeric values found */}
+                        {monitor.history && monitor.history.length >= 2 && (
+                            <Sparkline 
+                                data={monitor.history.map(h => ({ value: h.value, status: h.status }))}
+                                width={50}
+                                height={16}
+                                className="opacity-80"
+                            />
+                        )}
+                        {/* Status bars */}
                         <div className="flex gap-[2px]">
                             {[...Array(20)].map((_, i) => {
                                 // History is sorted newest-first, we want newest on the LEFT
@@ -644,7 +671,7 @@ const Dashboard = () => {
             >
               {t('dashboard.all')} ({monitors.length})
             </button>
-            {allTags.map(tag => (
+            {tagsWithCounts.map(({ tag, count }) => (
               <button
                 key={tag}
                 onClick={() => setSelectedTag(tag === selectedTag ? null : tag)}
@@ -654,7 +681,7 @@ const Dashboard = () => {
                     : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
               >
-                {tag} ({monitors.filter(m => { try { return (JSON.parse(m.tags || '[]') as string[]).includes(tag); } catch { return false; }}).length})
+                {tag} ({count})
               </button>
             ))}
           </div>

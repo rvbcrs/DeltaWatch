@@ -40,10 +40,13 @@ export default function Register() {
     };
 
     return (
-        <div className="flex items-center justify-center min-h-screen bg-[#0d1117] text-[#c9d1d9]">
-            <div className="w-full max-w-md p-8 space-y-6 bg-[#161b22] border border-[#30363d] rounded-lg">
+        <div 
+            className="flex items-center justify-center min-h-screen bg-cover bg-center bg-no-repeat text-[#c9d1d9]"
+            style={{ backgroundImage: "url('/bg_image_1.png')" }}
+        >
+            <div className="w-full max-w-md p-8 space-y-6 bg-[#161b22]/90 backdrop-blur-sm border border-[#30363d] rounded-lg shadow-2xl">
                 <div className="text-center">
-                    <img src="/logo_128.png" alt="DeltaWatch" className="w-16 h-16 mx-auto mb-4" />
+                    <img src="/logo_new.png" alt="DeltaWatch" className="w-20 h-20 mx-auto mb-4" />
                     <h2 className="text-2xl font-bold text-white">
                         {isSetupMode ? 'Admin Setup' : 'Create Account'}
                     </h2>

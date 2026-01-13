@@ -45,6 +45,10 @@ export interface Monitor {
     price_threshold_min?: number;
     price_threshold_max?: number;
     price_detection_enabled?: boolean;
+    price_target?: number;
+    price_target_notified?: boolean;
+    stock_alert_enabled?: boolean;
+    last_stock_status?: 'in_stock' | 'out_of_stock' | 'unknown';
 }
 /**
  * Standard API response wrapper

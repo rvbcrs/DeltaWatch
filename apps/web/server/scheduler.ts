@@ -562,10 +562,71 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                     console.log(`[${monitorName}] ${priceAlertMessage}`);
                 }
                 
+                // TARGET PRICE ALERT
+                // Check if price has reached or dropped below the target
+                if (monitor.price_target && detectedPrice <= monitor.price_target) {
+                    if (!monitor.price_target_notified) {
+                        priceAlertTriggered = true;
+                        priceAlertMessage = `🎯 TARGET PRICE REACHED! ${monitorName} is now ${formatPrice(detectedPrice, detectedCurrency)} (your target was ${formatPrice(monitor.price_target, detectedCurrency)})`;
+                        console.log(`[${monitorName}] ${priceAlertMessage}`);
+                        // Mark as notified to prevent spam
+                        db.run("UPDATE monitors SET price_target_notified = 1 WHERE id = ?", [monitor.id]);
+                    }
+                } else if (monitor.price_target && detectedPrice > monitor.price_target && monitor.price_target_notified) {
+                    // Price went back above target, reset notification flag
+                    console.log(`[${monitorName}] Price back above target, resetting notification flag`);
+                    db.run("UPDATE monitors SET price_target_notified = 0 WHERE id = ?", [monitor.id]);
+                }
+                
                 // Override the text content with the formatted price so history shows the price
                 text = formatPrice(detectedPrice, detectedCurrency);
             } else {
                 console.log(`[${monitorName}] No price detected on page`);
+            }
+        }
+        
+        // STOCK ALERT DETECTION
+        let stockAlertTriggered = false;
+        let stockAlertMessage = '';
+        let currentStockStatus: 'in_stock' | 'out_of_stock' | 'unknown' = 'unknown';
+        
+        if (monitor.stock_alert_enabled && text) {
+            const contentLower = text.toLowerCase();
+            
+            // Patterns that indicate OUT OF STOCK
+            const outOfStockPatterns = [
+                'out of stock', 'sold out', 'uitverkocht', 'niet beschikbaar', 
+                'unavailable', 'not available', 'coming soon', 'pre-order',
+                'notify me', 'back in stock', 'sold-out', 'out-of-stock'
+            ];
+            
+            // Patterns that indicate IN STOCK
+            const inStockPatterns = [
+                'in stock', 'add to cart', 'add to basket', 'buy now', 
+                'in winkelwagen', 'beschikbaar', 'available', 'in voorraad',
+                'order now', 'shop now', 'toevoegen aan'
+            ];
+            
+            const isOutOfStock = outOfStockPatterns.some(p => contentLower.includes(p));
+            const isInStock = inStockPatterns.some(p => contentLower.includes(p));
+            
+            if (isOutOfStock && !isInStock) {
+                currentStockStatus = 'out_of_stock';
+            } else if (isInStock && !isOutOfStock) {
+                currentStockStatus = 'in_stock';
+            }
+            
+            // Check for transition: OUT -> IN (Back in stock!)
+            if (monitor.last_stock_status === 'out_of_stock' && currentStockStatus === 'in_stock') {
+                stockAlertTriggered = true;
+                stockAlertMessage = `🎉 BACK IN STOCK! ${monitorName} is now available!`;
+                console.log(`[${monitorName}] ${stockAlertMessage}`);
+            }
+            
+            // Update stock status in database
+            if (currentStockStatus !== 'unknown' && currentStockStatus !== monitor.last_stock_status) {
+                db.run("UPDATE monitors SET last_stock_status = ? WHERE id = ?", [currentStockStatus, monitor.id]);
+                console.log(`[${monitorName}] Stock status changed: ${monitor.last_stock_status || 'unknown'} → ${currentStockStatus}`);
             }
         }
 
@@ -646,8 +707,9 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
             }
         }
 
-        if (textChange || visualChange || priceChanged || priceAlertTriggered) {
+        if (textChange || visualChange || priceChanged || priceAlertTriggered || stockAlertTriggered) {
             let changeMsg = "";
+            if (stockAlertTriggered) changeMsg += stockAlertMessage + " ";
             if (textChange) changeMsg += "Text Content Changed. ";
             if (visualChange) changeMsg += "Visual Appearance Changed. ";
             if (priceAlertTriggered) changeMsg += priceAlertMessage + " ";

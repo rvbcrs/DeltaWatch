@@ -1320,12 +1320,12 @@ app.patch('/monitors/reorder', auth.authenticateToken, (req: AuthRequest, res: R
 
 // Add a new monitor
 app.post('/monitors', auth.authenticateToken, (req: AuthRequest, res: Response) => {
-    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max } = req.body;
+    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled } = req.body;
     const userId = req.user?.userId;
 
     db.run(
-        `INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0, group_id || null, price_detection_enabled || 0, price_threshold_min || null, price_threshold_max || null],
+        `INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0, group_id || null, price_detection_enabled || 0, price_threshold_min || null, price_threshold_max || null, price_target || null, stock_alert_enabled || 0],
         function (this: { lastID: number }, err: Error | null) {
             if (err) {
                 res.status(500).json({ error: err.message });
@@ -1341,10 +1341,10 @@ app.post('/monitors', auth.authenticateToken, (req: AuthRequest, res: Response) 
 
 // Update a monitor
 app.put('/monitors/:id', auth.authenticateToken, (req: AuthRequest, res: Response) => {
-    const { url, selector, selector_text, interval, type, name, active, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual, retry_count, retry_delay, price_detection_enabled, price_threshold_min, price_threshold_max } = req.body;
+    const { url, selector, selector_text, interval, type, name, active, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual, retry_count, retry_delay, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled } = req.body;
     db.run(
-        `UPDATE monitors SET url = COALESCE(?, url), selector = COALESCE(?, selector), selector_text = COALESCE(?, selector_text), interval = COALESCE(?, interval), type = COALESCE(?, type), name = COALESCE(?, name), active = COALESCE(?, active), notify_config = COALESCE(?, notify_config), ai_prompt = COALESCE(?, ai_prompt), scenario_config = COALESCE(?, scenario_config), tags = COALESCE(?, tags), keywords = COALESCE(?, keywords), ai_only_visual = COALESCE(?, ai_only_visual), retry_count = COALESCE(?, retry_count), retry_delay = COALESCE(?, retry_delay), price_detection_enabled = COALESCE(?, price_detection_enabled), price_threshold_min = COALESCE(?, price_threshold_min), price_threshold_max = COALESCE(?, price_threshold_max) WHERE id = ? AND user_id = ?`,
-        [url, selector, selector_text, interval, type, name, active, notify_config ? JSON.stringify(notify_config) : null, ai_prompt, scenario_config, tags ? JSON.stringify(tags) : null, keywords ? JSON.stringify(keywords) : null, ai_only_visual, retry_count, retry_delay, price_detection_enabled, price_threshold_min, price_threshold_max, req.params.id, req.user?.userId],
+        `UPDATE monitors SET url = COALESCE(?, url), selector = COALESCE(?, selector), selector_text = COALESCE(?, selector_text), interval = COALESCE(?, interval), type = COALESCE(?, type), name = COALESCE(?, name), active = COALESCE(?, active), notify_config = COALESCE(?, notify_config), ai_prompt = COALESCE(?, ai_prompt), scenario_config = COALESCE(?, scenario_config), tags = COALESCE(?, tags), keywords = COALESCE(?, keywords), ai_only_visual = COALESCE(?, ai_only_visual), retry_count = COALESCE(?, retry_count), retry_delay = COALESCE(?, retry_delay), price_detection_enabled = COALESCE(?, price_detection_enabled), price_threshold_min = COALESCE(?, price_threshold_min), price_threshold_max = COALESCE(?, price_threshold_max), price_target = COALESCE(?, price_target), stock_alert_enabled = COALESCE(?, stock_alert_enabled) WHERE id = ? AND user_id = ?`,
+        [url, selector, selector_text, interval, type, name, active, notify_config ? JSON.stringify(notify_config) : null, ai_prompt, scenario_config, tags ? JSON.stringify(tags) : null, keywords ? JSON.stringify(keywords) : null, ai_only_visual, retry_count, retry_delay, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled, req.params.id, req.user?.userId],
         function (err: Error | null) {
             if (err) {
                 res.status(500).json({ error: err.message });

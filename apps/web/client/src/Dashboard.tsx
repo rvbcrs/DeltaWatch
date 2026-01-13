@@ -443,6 +443,28 @@ const Dashboard = () => {
                                 💰 {new Intl.NumberFormat('nl-NL', { style: 'currency', currency: monitor.detected_currency || 'EUR' }).format(monitor.detected_price)}
                             </span>
                         )}
+                        {/* Target Price Progress Badge */}
+                        {monitor.price_target && monitor.detected_price && (
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border flex items-center gap-1 ${
+                                monitor.detected_price <= monitor.price_target 
+                                    ? 'bg-green-900/30 text-green-400 border-green-900' 
+                                    : 'bg-yellow-900/30 text-yellow-400 border-yellow-900'
+                            }`}>
+                                🎯 {monitor.detected_price <= monitor.price_target 
+                                    ? 'TARGET!' 
+                                    : `${Math.round((monitor.price_target / monitor.detected_price) * 100)}%`}
+                            </span>
+                        )}
+                        {/* Stock Status Badge */}
+                        {monitor.stock_alert_enabled && monitor.last_stock_status && (
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border flex items-center gap-1 ${
+                                monitor.last_stock_status === 'in_stock' 
+                                    ? 'bg-green-900/30 text-green-400 border-green-900' 
+                                    : 'bg-red-900/30 text-red-400 border-red-900'
+                            }`}>
+                                {monitor.last_stock_status === 'in_stock' ? '✅ IN STOCK' : '❌ SOLD OUT'}
+                            </span>
+                        )}
                         {monitor.history && monitor.history.length > 0 && (() => {
                             const historyWithStatus = monitor.history.filter(h => h.http_status !== null);
                             if (historyWithStatus.length === 0) return null;

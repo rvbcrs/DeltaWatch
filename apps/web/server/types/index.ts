@@ -44,6 +44,12 @@ export interface Monitor {
     price_threshold_min?: number;
     price_threshold_max?: number;
     price_detection_enabled?: number;
+    // Target Price Alert
+    price_target?: number;
+    price_target_notified?: number;
+    // Stock Alert
+    stock_alert_enabled?: number;
+    last_stock_status?: string;
     consecutive_failures: number;
     created_at: string;
 }

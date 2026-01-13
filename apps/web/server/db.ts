@@ -199,6 +199,28 @@ function initDb(): void {
                     console.log('Migrating: Adding price_detection_enabled column to monitors table...');
                     db.run("ALTER TABLE monitors ADD COLUMN price_detection_enabled INTEGER DEFAULT 0");
                 }
+                // Target Price Alert columns
+                const hasPriceTarget = rows.some(r => r.name === 'price_target');
+                if (!hasPriceTarget) {
+                    console.log('Migrating: Adding price_target column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN price_target REAL");
+                }
+                const hasPriceTargetNotified = rows.some(r => r.name === 'price_target_notified');
+                if (!hasPriceTargetNotified) {
+                    console.log('Migrating: Adding price_target_notified column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN price_target_notified INTEGER DEFAULT 0");
+                }
+                // Stock Alert columns
+                const hasStockAlertEnabled = rows.some(r => r.name === 'stock_alert_enabled');
+                if (!hasStockAlertEnabled) {
+                    console.log('Migrating: Adding stock_alert_enabled column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN stock_alert_enabled INTEGER DEFAULT 0");
+                }
+                const hasLastStockStatus = rows.some(r => r.name === 'last_stock_status');
+                if (!hasLastStockStatus) {
+                    console.log('Migrating: Adding last_stock_status column to monitors table...');
+                    db.run("ALTER TABLE monitors ADD COLUMN last_stock_status TEXT");
+                }
             } else {
                 console.error("Error checking table info:", err);
             }

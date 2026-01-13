@@ -47,6 +47,12 @@ export interface Monitor {
   price_threshold_min?: number;
   price_threshold_max?: number;
   price_detection_enabled?: boolean;
+  // Target Price Alert
+  price_target?: number;
+  price_target_notified?: boolean;
+  // Stock Alert
+  stock_alert_enabled?: boolean;
+  last_stock_status?: 'in_stock' | 'out_of_stock' | 'unknown';
 }
 
 /**

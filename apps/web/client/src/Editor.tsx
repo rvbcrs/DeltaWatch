@@ -48,6 +48,8 @@ function Editor() {
   const [priceDetectionEnabled, setPriceDetectionEnabled] = useState(false);
   const [priceThresholdMin, setPriceThresholdMin] = useState<number | ''>('');
   const [priceThresholdMax, setPriceThresholdMax] = useState<number | ''>('');
+  const [priceTarget, setPriceTarget] = useState<number | ''>('');
+  const [stockAlertEnabled, setStockAlertEnabled] = useState(false);
   const [priceScanResult, setPriceScanResult] = useState<{
       success: boolean; 
       formatted?: string; 
@@ -119,6 +121,8 @@ function Editor() {
                         setRetryDelay(monitor.retry_delay ?? 2000);
                         setPriceThresholdMin(monitor.price_threshold_min ?? '');
                         setPriceThresholdMax(monitor.price_threshold_max ?? '');
+                        setPriceTarget(monitor.price_target ?? '');
+                        setStockAlertEnabled(!!monitor.stock_alert_enabled);
                         
                         try {
                             if (monitor.notify_config) setNotifyConfig(JSON.parse(monitor.notify_config));
@@ -322,7 +326,9 @@ function Editor() {
                 retry_delay: retryDelay,
                 price_detection_enabled: finalPriceEnabled,
                 price_threshold_min: priceThresholdMin || null,
-                price_threshold_max: priceThresholdMax || null
+                price_threshold_max: priceThresholdMax || null,
+                price_target: priceTarget || null,
+                stock_alert_enabled: stockAlertEnabled ? 1 : 0
             })
         });
         const data = await response.json();
@@ -888,9 +894,62 @@ function Editor() {
                                             />
                                         </div>
                                     </div>
-                                    <p className="text-xs text-gray-500 italic mb-4">
+                                    
+                                    {/* Target Price */}
+                                    <div className="mt-3">
+                                        <label className="block text-xs font-medium text-gray-400 mb-1">🎯 Target Price</label>
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="number"
+                                                value={priceTarget}
+                                                onChange={(e) => setPriceTarget(e.target.value ? Number(e.target.value) : '')}
+                                                placeholder="Alert me when price drops to..."
+                                                className="flex-1 bg-[#0d1117] border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:border-green-500"
+                                            />
+                                            {priceTarget && priceScanResult?.price && (
+                                                <div className="text-xs text-gray-400">
+                                                    {Math.round((priceScanResult.price / Number(priceTarget)) * 100)}% there
+                                                </div>
+                                            )}
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            You'll get a one-time alert when the price reaches this target.
+                                        </p>
+                                    </div>
+                                    
+                                    <p className="text-xs text-gray-500 italic mb-4 mt-2">
                                         {t('editor.price_threshold_hint', 'Leave blank to get notified on ANY price change.')}
                                     </p>
+                                </div>
+                                
+                                {/* Stock Alert Section */}
+                                <div className="bg-[#161b22] border border-gray-700 rounded-lg p-4">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                                                📦 Stock Alert
+                                            </h2>
+                                            <p className="text-xs text-gray-400 mt-1">
+                                                Get notified when a product becomes available again
+                                            </p>
+                                        </div>
+                                        <label className="relative inline-flex items-center cursor-pointer">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={stockAlertEnabled}
+                                                onChange={(e) => setStockAlertEnabled(e.target.checked)}
+                                                className="sr-only peer"
+                                            />
+                                            <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                                        </label>
+                                    </div>
+                                    {stockAlertEnabled && (
+                                        <div className="mt-3 p-3 bg-[#0d1117] rounded-lg border border-gray-800">
+                                            <p className="text-xs text-gray-400">
+                                                🔍 We'll scan for text like "Sold Out", "Out of Stock", "Uitverkocht" and alert you when it changes to "In Stock", "Add to Cart", etc.
+                                            </p>
+                                        </div>
+                                    )}
                                 </div>
                                 
                                 <div>

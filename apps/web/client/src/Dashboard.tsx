@@ -64,6 +64,11 @@ interface Monitor {
     price_detection_enabled?: boolean;
     detected_price?: number;
     detected_currency?: string;
+    price_target?: number;
+    price_target_notified?: boolean;
+    stock_alert_enabled?: boolean;
+    last_stock_status?: 'in_stock' | 'out_of_stock' | 'unknown';
+    consecutive_failures?: number;
 }
 
 const TimeAgo = ({ date }: { date: string | null | undefined }) => {

@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Settings, Menu, X, LogOut, User } from 'lucide-react'
+import { LayoutDashboard, Settings, Menu, X, LogOut, User, Grid3X3 } from 'lucide-react'
 import { useAuth } from './contexts/AuthContext'
 import { useTranslation } from 'react-i18next'
 
@@ -28,6 +28,7 @@ function Layout({ children }: LayoutProps) {
 
   const navItems: NavItem[] = [
     { icon: <LayoutDashboard size={20} />, label: t('sidebar.dashboard'), path: '/' },
+    { icon: <Grid3X3 size={20} />, label: 'Widgets', path: '/widgets' },
     { icon: <Settings size={20} />, label: t('sidebar.settings'), path: '/settings' },
     { icon: <User size={20} />, label: t('sidebar.users'), path: '/users', adminOnly: true },
   ];

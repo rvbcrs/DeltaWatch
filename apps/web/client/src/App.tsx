@@ -11,6 +11,7 @@ import Register from './Register'
 import Users from './Users'
 import VerifyEmail from './pages/VerifyEmail'
 import KioskMode from './KioskMode'
+import WidgetDashboardPage from './WidgetDashboardPage'
 import { ToastProvider } from './contexts/ToastContext'
 import { DialogProvider } from './contexts/DialogContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -61,6 +62,7 @@ function App() {
                         <Route path="/monitor/:id" element={<MonitorDetails />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/users" element={<Users />} />
+                        <Route path="/widgets" element={<WidgetDashboardPage />} />
                         </Routes>
                     </Layout>
                     </ProtectedRoute>

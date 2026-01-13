@@ -591,6 +591,51 @@ app.get('/api/stats', auth.authenticateToken, async (req: AuthRequest, res: Resp
         });
 });
 
+// Global History endpoint for widget dashboard
+app.get('/api/history', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+    const userId = req.user?.userId;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const status = req.query.status as string; // 'changed', 'error', or undefined for all
+    
+    let query = `
+        SELECT 
+            check_history.id,
+            check_history.monitor_id,
+            monitors.name as monitor_name,
+            monitors.url as monitor_url,
+            check_history.status,
+            check_history.value,
+            check_history.created_at
+        FROM check_history 
+        JOIN monitors ON check_history.monitor_id = monitors.id
+        WHERE monitors.user_id = ?
+    `;
+    const params: (number | string)[] = [userId!];
+    
+    if (status) {
+        query += ` AND check_history.status = ?`;
+        params.push(status);
+    }
+    
+    query += ` ORDER BY check_history.created_at DESC LIMIT ?`;
+    params.push(limit);
+    
+    db.all(query, params, (err: Error | null, rows: { id: number; monitor_id: number; monitor_name: string; monitor_url: string; status: string; value: string; created_at: string }[]) => {
+        if (err) {
+            console.error("History Error:", err);
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json({
+            message: 'success',
+            data: rows.map(r => ({
+                ...r,
+                monitor_name: r.monitor_name || new URL(r.monitor_url).hostname
+            }))
+        });
+    });
+});
+
 // Status endpoint (public)
 app.get('/status', (req: Request, res: Response) => {
     db.all("SELECT id, name, url, active, last_check, last_change, type, tags FROM monitors WHERE active = 1 ORDER BY name ASC", [], async (err: Error | null, monitors: Monitor[]) => {

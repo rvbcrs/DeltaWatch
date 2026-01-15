@@ -11,3 +11,4 @@ apps/web/server/chrome_user_data
 apps/web/server/dist
 apps/web/public/screenshots/*
 *.env
+apps/web/server/data/*.db

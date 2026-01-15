@@ -14,6 +14,18 @@ import { summarizeChange, summarizeVisualChange, findSelector } from './ai';
 import { logError, logWarn, logInfo } from './logger';
 import { extractPrice, formatPrice } from './priceExtractor';
 import type { Monitor, Settings, Keyword } from './types';
+import { getNotificationHtml, getDigestHtml, getKeywordAlertHtml, getDowntimeAlertHtml, getAiSummaryHtml } from './templates';
+
+let cachedUsername: string | undefined = undefined;
+async function getCachedUsername() {
+    if (cachedUsername) return cachedUsername;
+    return new Promise<string | undefined>((resolve) => {
+        db.get("SELECT username FROM users LIMIT 1", (err: any, row: any) => {
+            if (row) cachedUsername = row.username;
+            resolve(cachedUsername);
+        });
+    });
+}
 
 // Backend translations for email notifications
 const translations: Record<string, Record<string, string>> = {
@@ -732,7 +744,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                 if (text !== monitor.last_value) {
                     const diffResult = Diff.diffWordsWithSpace(monitor.last_value || '', text || '');
 
-                    diffHtml = '<div style="font-family: monospace; background: #f6f8fa; padding: 10px; border-radius: 5px; border: 1px solid #eaecef; white-space: pre-wrap; line-height: 1.5;">';
+                    diffHtml = '<div style="font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 10px; border-radius: 5px; border: 1px solid #30363d; white-space: pre-wrap; line-height: 1.5;">';
 
                     diffResult.forEach(part => {
                         const isChange = part.added || part.removed;
@@ -743,10 +755,10 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                             value = value.substring(0, 80) + ' ... ' + value.substring(value.length - 80);
                         }
 
-                        const color = part.added ? '#e6ffec' :
-                            part.removed ? '#ffebe9' : 'transparent';
-                        const textColor = part.added ? '#1a7f37' :
-                            part.removed ? '#cf222e' : '#57606a';
+                        const color = part.added ? '#112918' :
+                            part.removed ? '#3e1618' : 'transparent';
+                        const textColor = part.added ? '#3fb950' :
+                            part.removed ? '#f85149' : '#8b949e';
                         const fontWeight = isChange ? 'bold' : 'normal';
                         const textDecoration = part.removed ? 'line-through' : 'none';
 
@@ -782,37 +794,14 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                 let aiSummaryHtml = '';
                 if (aiSummary) {
                     finalChangeMsg += `\n\n🤖 AI Summary: ${aiSummary}`;
-                    aiSummaryHtml = `
-                        <div style="border: 2px solid #8B5CF6; border-radius: 8px; padding: 16px; margin: 16px 0; background-color: #F5F3FF; color: #4C1D95; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-                            <div style="font-weight: bold; margin-bottom: 8px; font-size: 1.1em; display: flex; align-items: center;">
-                                <span style="font-size: 1.4em; margin-right: 8px;">🤖</span> AI Summary
-                            </div>
-                            <div style="line-height: 1.6;">${aiSummary.replace(/\n/g, '<br>')}</div>
-                        </div>
-                    `;
+                    aiSummaryHtml = getAiSummaryHtml(aiSummary);
                 }
 
                 const subject = `DW: ${identifier}`;
                 const message = `Change detected for ${identifier}.\n\n${changeMsg}${aiSummary ? `\n\n🤖 AI Summary: ${aiSummary}` : ''}\n\nURL: ${monitor.url}`;
 
-                const htmlMessage = `
-                    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px;">
-                        <h2 style="color: #1a1a1a; padding-bottom: 10px; border-bottom: 1px solid #eaecef;">DW: ${identifier}</h2>
-                        
-                        <p style="margin: 15px 0;"><strong>URL:</strong> <a href="${monitor.url}" style="color: #0969da; text-decoration: none;">${monitor.url}</a></p>
-                        
-                        ${aiSummaryHtml}
-                        
-                        <p style="color: #444; margin: 15px 0;"><strong>Detection:</strong> ${changeMsg}</p>
-                        
-                        ${diffHtml ? `
-                            <h3 style="margin-top: 20px; color: #1a1a1a;">Text Changes:</h3>
-                            ${diffHtml}
-                        ` : ''}
-                        
-                        <p style="margin-top: 30px; color: #666; font-size: 12px; border-top: 1px solid #eaecef; padding-top: 10px;">Sent by DeltaWatch</p>
-                    </div>
-                `;
+                const username = await getCachedUsername();
+                const htmlMessage = getNotificationHtml(monitor, changeMsg, diffHtml, aiSummaryHtml, username);
 
                 let diffImagePath: string | null = null;
                 const renderSettings = await new Promise<Settings>((resolve) => 
@@ -961,13 +950,8 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                         const identifier = monitor.name || monitor.url;
                         const subject = `🔑 Keyword Alert: ${identifier}`;
                         const message = `${alertMessage}\n\nMonitor: ${identifier}\nURL: ${monitor.url}`;
-                        const htmlMessage = `
-                            <h2>🔑 Keyword Alert</h2>
-                            <p><strong>Monitor:</strong> ${identifier}</p>
-                            <p><strong>URL:</strong> <a href="${monitor.url}">${monitor.url}</a></p>
-                            <p><strong>Alert:</strong> ${alertMessage}</p>
-                            <p><small>Sent by DeltaWatch</small></p>
-                        `;
+                        const username = await getCachedUsername();
+                        const htmlMessage = getKeywordAlertHtml(monitor, alertMessage, username);
                         sendNotification(subject, message, htmlMessage, null, null);
                     }
                 }
@@ -982,13 +966,8 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
             const identifier = monitor.name || monitor.url;
             const subject = `🔴 Downtime Alert: ${identifier}`;
             const message = `HTTP ${httpStatus} Error\n\nMonitor: ${identifier}\nURL: ${monitor.url}\nStatus Code: ${httpStatus}`;
-            const htmlMessage = `
-                <h2>🔴 Downtime Alert</h2>
-                <p><strong>Monitor:</strong> ${identifier}</p>
-                <p><strong>URL:</strong> <a href="${monitor.url}">${monitor.url}</a></p>
-                <p><strong>HTTP Status:</strong> ${httpStatus}</p>
-                <p><small>Sent by DeltaWatch</small></p>
-            `;
+            const username = await getCachedUsername();
+            const htmlMessage = getDowntimeAlertHtml(monitor, httpStatus, username);
             sendNotification(subject, message, htmlMessage, null, null);
         }
 
@@ -1260,8 +1239,80 @@ async function watchdogCheck(): Promise<void> {
     });
 }
 
+async function checkDigest(force = false): Promise<string> {
+    return new Promise((resolve, reject) => {
+        db.get("SELECT * FROM settings WHERE id = 1", [], (err: Error | null, settings: Settings) => {
+            if (err) {
+                console.error('[Digest] DB Error settings:', err);
+                return resolve('Error fetching settings');
+            }
+            if (!settings) {
+                return resolve('No settings found');
+            }
+            
+            const now = new Date();
+            const currentHm = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+            
+            if (settings.digest_enabled && force) {
+                 console.log(`[Digest] Check - Enabled: true, Schedule: ${settings.digest_time}, Current: ${currentHm}, Force: ${force}`);
+            }
+
+            if (force || (settings.digest_enabled && settings.digest_time === currentHm)) {
+                if (force) console.log(`[Digest] Forced run, checking queue...`);
+                else console.log(`[Digest] Time match (${currentHm}), checking queue...`);
+                
+                db.all("SELECT * FROM notification_queue WHERE status = 'pending'", [], async (err, rows) => {
+                    if (err) {
+                        console.error('[Digest] DB Error queue:', err);
+                        return resolve('Error fetching queue');
+                    }
+                    
+                    try {
+                        if (!rows || rows.length === 0) {
+                            if (force) console.log('[Digest] No pending notifications found.');
+                            return resolve('No pending notifications');
+                        }
+                        
+                        console.log(`[Digest] Found ${rows.length} pending notifications. Sending digest.`);
+
+                        const subject = `DeltaWatch Digest: ${rows.length} Updates`;
+                        const username = await getCachedUsername();
+                        const htmlBody = getDigestHtml(rows, username);
+                        
+                        await sendNotification(
+                            subject, 
+                            `You have ${rows.length} updates. Please view the HTML email for details.`, 
+                            htmlBody, 
+                            { force_instant: true } as any, 
+                            null
+                        );
+                        
+                        const ids = rows.map((r: any) => r.id).join(',');
+                        db.run(`UPDATE notification_queue SET status = 'sent' WHERE id IN (${ids})`, (err) => {
+                             if (!err) console.log(`[Digest] Marked ${rows.length} items as sent.`);
+                             else console.error(`[Digest] Error marking sent:`, err);
+                        });
+                        resolve(`Digest sent with ${rows.length} items`);
+                        
+                    } catch (e: any) {
+                        console.error('[Digest] Failed:', e);
+                        resolve(`Error: ${e.message}`);
+                    }
+                });
+            } else {
+                resolve('Not scheduled time');
+            }
+        });
+    });
+}
+
 function startScheduler(): void {
     let isCheckRunning = false;
+
+    // Digest Check: Run every minute
+    cron.schedule('* * * * *', async () => {
+        checkDigest();
+    });
 
     // Run every minute
     cron.schedule('* * * * *', async () => {
@@ -1292,4 +1343,4 @@ function startScheduler(): void {
     console.log('Watchdog enabled - will auto-recover if all monitors get stuck in cooldown.');
 }
 
-export { startScheduler, checkSingleMonitor, previewScenario, executeScenario };
+export { startScheduler, checkSingleMonitor, previewScenario, executeScenario, checkDigest };

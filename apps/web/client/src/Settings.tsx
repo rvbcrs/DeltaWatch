@@ -30,6 +30,8 @@ interface SettingsData {
     webhook_url: string;
     watchdog_threshold: number;
     language: string;
+    digest_enabled: boolean;
+    digest_time: string;
 }
 
 import { useTranslation } from 'react-i18next';
@@ -66,7 +68,9 @@ function Settings() {
         webhook_enabled: false,
         webhook_url: '',
         watchdog_threshold: 50,
-        language: 'en'
+        language: 'en',
+        digest_enabled: false,
+        digest_time: '09:00'
     });
 
     const [showPassword, setShowPassword] = useState(false);
@@ -89,6 +93,8 @@ function Settings() {
                         webhook_enabled: !!data.data.webhook_enabled,
                         watchdog_threshold: data.data.watchdog_threshold ?? 50,
                         language: data.data.language || 'en',
+                        digest_enabled: !!data.data.digest_enabled,
+                        digest_time: data.data.digest_time || '09:00',
                     });
                     // Sync i18n with backend language setting
                     if (data.data.language && data.data.language !== i18n.language) {
@@ -125,6 +131,29 @@ function Settings() {
         } catch (e) {
             console.error(e);
             showToast('Error saving settings', 'error');
+        }
+    };
+    
+    const handleTestDigest = async () => {
+        try {
+             await authFetch(`${API_BASE}/settings`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+
+            const res = await authFetch('/test-digest', {
+                method: 'POST'
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showToast('Digest Triggered: ' + data.message, 'success');
+            } else {
+                showToast(`Failed (${res.status}): ` + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (error: any) {
+            console.error('Test Digest Error:', error);
+            showToast('Error triggering digest: ' + (error.message || 'Check console'), 'error');
         }
     };
     
@@ -367,6 +396,41 @@ function Settings() {
                                     <label className="block text-sm font-medium text-gray-400 mb-1">From Address (Optional)</label>
                                     <input type="email" name="email_from" value={settings.email_from} onChange={handleChange} className="w-full bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-blue-500 focus:outline-none" placeholder="no-reply@deltawatch.com" />
                                     <p className="text-xs text-gray-500 mt-1">Leave empty to use the SMTP username as sender.</p>
+                                </div>
+
+                                <div className="md:col-span-2 pt-4 border-t border-gray-800 mt-2">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-300">Daily Digest Email</label>
+                                            <p className="text-xs text-gray-500">Receive a single email daily with all updates instead of individual alerts.</p>
+                                        </div>
+                                        <label className="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" name="digest_enabled" checked={settings.digest_enabled} onChange={handleChange} className="sr-only peer" />
+                                            <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                        </label>
+                                    </div>
+                                    
+                                    {settings.digest_enabled && (
+                                        <div className="mt-4">
+                                            <label className="block text-sm font-medium text-gray-400 mb-1">Schedule Time (Daily)</label>
+                                            <div className="flex items-center gap-3">
+                                                <input 
+                                                    type="time" 
+                                                    name="digest_time" 
+                                                    value={settings.digest_time} 
+                                                    onChange={handleChange} 
+                                                    className="bg-[#0d1117] border border-gray-700 rounded p-2 text-white focus:border-blue-500 focus:outline-none" 
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={handleTestDigest}
+                                                    className="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white px-3 py-2 rounded transition-colors"
+                                                >
+                                                    Send Test Now
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="md:col-span-2">
                                    <button 

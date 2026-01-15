@@ -35,6 +35,26 @@ interface Stats {
     successRate: number;
 }
 
+interface CheckData {
+    date: string;
+    total: number;
+    changed: number;
+    errors: number;
+}
+
+interface ActivityData {
+    date: string;
+    count: number;
+}
+
+interface Alert {
+    id: number;
+    type: 'price_target' | 'stock_alert' | 'error' | 'change';
+    monitor_name: string;
+    message: string;
+    created_at: string;
+}
+
 export default function WidgetDashboardPage() {
     const navigate = useNavigate();
     const { authFetch } = useAuth();
@@ -49,6 +69,9 @@ export default function WidgetDashboardPage() {
     });
     const [monitors, setMonitors] = useState<Monitor[]>([]);
     const [recentChanges, setRecentChanges] = useState<HistoryItem[]>([]);
+    const [checksTimeline, setChecksTimeline] = useState<CheckData[]>([]);
+    const [activityData, setActivityData] = useState<ActivityData[]>([]);
+    const [alerts, setAlerts] = useState<Alert[]>([]);
     const [loading, setLoading] = useState(true);
     const [isRunningChecks, setIsRunningChecks] = useState(false);
 
@@ -64,15 +87,15 @@ export default function WidgetDashboardPage() {
             // Fetch stats
             const statsRes = await authFetch('/api/stats');
             const statsData = await statsRes.json();
-            if (statsData) {
+            if (statsData.data) {
                 setStats({
-                    totalMonitors: statsData.total_monitors || 0,
-                    activeMonitors: statsData.active_monitors || 0,
-                    checksToday: statsData.checks_24h || 0,
-                    changesDetected: 0, // Will be calculated from history
-                    errorsToday: statsData.errors_24h || 0,
-                    successRate: statsData.checks_24h > 0 
-                        ? Math.round(((statsData.checks_24h - statsData.errors_24h) / statsData.checks_24h) * 100) 
+                    totalMonitors: statsData.data.total_monitors || 0,
+                    activeMonitors: statsData.data.active_monitors || 0,
+                    checksToday: statsData.data.checks_24h || 0,
+                    changesDetected: statsData.data.changes_24h || 0,
+                    errorsToday: statsData.data.errors_24h || 0,
+                    successRate: statsData.data.checks_24h > 0 
+                        ? Math.round(((statsData.data.checks_24h - statsData.data.errors_24h) / statsData.data.checks_24h) * 100) 
                         : 100
                 });
             }
@@ -96,19 +119,46 @@ export default function WidgetDashboardPage() {
                     value: h.value,
                     created_at: h.created_at
                 })));
+
+                // Generate activity data from changes
+                const activityMap = new Map<string, number>();
+                historyData.data.forEach((h: { created_at: string }) => {
+                    const date = h.created_at.split('T')[0];
+                    activityMap.set(date, (activityMap.get(date) || 0) + 1);
+                });
+                setActivityData(Array.from(activityMap.entries()).map(([date, count]) => ({ date, count })));
             }
+
+            // Fetch checks timeline data
+            const timelineRes = await authFetch('/api/stats/timeline');
+            const timelineData = await timelineRes.json();
+            if (timelineData.message === 'success' && Array.isArray(timelineData.data)) {
+                setChecksTimeline(timelineData.data);
+            }
+
+            // Generate mock alerts from recent changes (until we have real alerts)
+            const mockAlerts: Alert[] = recentChanges.slice(0, 5).map((change, i) => ({
+                id: i,
+                type: 'change' as const,
+                monitor_name: change.monitor_name,
+                message: change.value?.substring(0, 50) || 'Content changed',
+                created_at: change.created_at
+            }));
+            setAlerts(mockAlerts);
+
         } catch (error) {
             console.error('Error fetching dashboard data:', error);
         } finally {
             setLoading(false);
         }
-    }, [authFetch]);
+    }, [authFetch, recentChanges]);
 
     useEffect(() => {
         fetchData();
         const interval = setInterval(fetchData, 30000);
         return () => clearInterval(interval);
-    }, [fetchData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleViewMonitor = (monitorId: number) => {
         navigate(`/monitor/${monitorId}`);
@@ -151,8 +201,8 @@ export default function WidgetDashboardPage() {
                         <ArrowLeft className="w-5 h-5 text-gray-400" />
                     </button>
                     <div>
-                        <h1 className="text-2xl font-bold text-white">Widget Dashboard</h1>
-                        <p className="text-sm text-gray-400">Customize your dashboard with widgets</p>
+                        <h1 className="text-2xl font-bold text-white">Analytics Dashboard</h1>
+                        <p className="text-sm text-gray-400">Monitor activity and trends</p>
                     </div>
                 </div>
             </div>
@@ -162,6 +212,9 @@ export default function WidgetDashboardPage() {
                 stats={stats}
                 monitors={monitors}
                 recentChanges={recentChanges}
+                checksTimeline={checksTimeline}
+                activityData={activityData}
+                alerts={alerts}
                 onViewMonitor={handleViewMonitor}
                 onRunAllChecks={handleRunAllChecks}
                 onRefreshData={fetchData}

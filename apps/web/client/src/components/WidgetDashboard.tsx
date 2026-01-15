@@ -8,6 +8,9 @@ import {
     PriceTrackersWidget,
     ErrorsWidget,
     QuickActionsWidget,
+    ChecksTimelineWidget,
+    ActivityHeatmapWidget,
+    AlertFeedWidget,
     WidgetConfig,
     WidgetType,
     DEFAULT_WIDGETS,
@@ -45,22 +48,48 @@ interface Stats {
     successRate: number;
 }
 
+interface CheckData {
+    date: string;
+    total: number;
+    changed: number;
+    errors: number;
+}
+
+interface ActivityData {
+    date: string;
+    count: number;
+}
+
+interface Alert {
+    id: number;
+    type: 'price_target' | 'stock_alert' | 'error' | 'change';
+    monitor_name: string;
+    message: string;
+    created_at: string;
+}
+
 interface WidgetDashboardProps {
     stats: Stats;
     monitors: Monitor[];
     recentChanges: HistoryItem[];
+    checksTimeline?: CheckData[];
+    activityData?: ActivityData[];
+    alerts?: Alert[];
     onViewMonitor: (monitorId: number) => void;
     onRunAllChecks: () => void;
     onRefreshData: () => void;
     isRunningChecks?: boolean;
 }
 
-const STORAGE_KEY = 'deltawatch_widget_layout';
+const STORAGE_KEY = 'deltawatch_widget_layout_v2';
 
 export function WidgetDashboard({
     stats,
     monitors,
     recentChanges,
+    checksTimeline = [],
+    activityData = [],
+    alerts = [],
     onViewMonitor,
     onRunAllChecks,
     onRefreshData,
@@ -70,7 +99,11 @@ export function WidgetDashboard({
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
             try {
-                return JSON.parse(saved);
+                const parsed = JSON.parse(saved);
+                // Merge with defaults to get new widgets
+                const existingTypes = new Set(parsed.map((w: WidgetConfig) => w.type));
+                const newWidgets = DEFAULT_WIDGETS.filter(w => !existingTypes.has(w.type));
+                return [...parsed, ...newWidgets.map(w => ({ ...w, visible: false }))];
             } catch {
                 return DEFAULT_WIDGETS;
             }
@@ -129,22 +162,24 @@ export function WidgetDashboard({
     // Move widget up in order
     const moveWidgetUp = (widgetId: string) => {
         setWidgets(prev => {
-            const index = prev.findIndex(w => w.id === widgetId);
+            const visibleList = prev.filter(w => w.visible);
+            const hiddenList = prev.filter(w => !w.visible);
+            const index = visibleList.findIndex(w => w.id === widgetId);
             if (index <= 0) return prev;
-            const newWidgets = [...prev];
-            [newWidgets[index - 1], newWidgets[index]] = [newWidgets[index], newWidgets[index - 1]];
-            return newWidgets;
+            [visibleList[index - 1], visibleList[index]] = [visibleList[index], visibleList[index - 1]];
+            return [...visibleList, ...hiddenList];
         });
     };
 
     // Move widget down in order
     const moveWidgetDown = (widgetId: string) => {
         setWidgets(prev => {
-            const index = prev.findIndex(w => w.id === widgetId);
-            if (index < 0 || index >= prev.length - 1) return prev;
-            const newWidgets = [...prev];
-            [newWidgets[index], newWidgets[index + 1]] = [newWidgets[index + 1], newWidgets[index]];
-            return newWidgets;
+            const visibleList = prev.filter(w => w.visible);
+            const hiddenList = prev.filter(w => !w.visible);
+            const index = visibleList.findIndex(w => w.id === widgetId);
+            if (index < 0 || index >= visibleList.length - 1) return prev;
+            [visibleList[index], visibleList[index + 1]] = [visibleList[index + 1], visibleList[index]];
+            return [...visibleList, ...hiddenList];
         });
     };
 
@@ -152,6 +187,7 @@ export function WidgetDashboard({
     const handleResetLayout = () => {
         setWidgets(DEFAULT_WIDGETS);
         setCollapsedWidgets(new Set());
+        localStorage.removeItem(STORAGE_KEY);
     };
 
     // Toggle widget collapse
@@ -192,8 +228,14 @@ export function WidgetDashboard({
                         isRunningChecks={isRunningChecks}
                     />
                 );
+            case 'checks_timeline':
+                return <ChecksTimelineWidget data={checksTimeline} />;
+            case 'activity_heatmap':
+                return <ActivityHeatmapWidget data={activityData} />;
+            case 'alert_feed':
+                return <AlertFeedWidget alerts={alerts} />;
             default:
-                return <div>Unknown widget type</div>;
+                return <div className="text-gray-500 text-sm">Unknown widget type: {widget.type}</div>;
         }
     };
 
@@ -204,12 +246,18 @@ export function WidgetDashboard({
                 return 'col-span-2';
             case 'quick_actions':
                 return 'col-span-1';
-            case 'recent_changes':
-                return 'col-span-2 row-span-2';
-            case 'price_trackers':
-                return 'col-span-1 row-span-2';
-            case 'errors':
+            case 'checks_timeline':
+                return 'col-span-2';
+            case 'activity_heatmap':
                 return 'col-span-3';
+            case 'recent_changes':
+                return 'col-span-1 row-span-2';
+            case 'price_trackers':
+                return 'col-span-2 row-span-2';
+            case 'errors':
+                return 'col-span-2';
+            case 'alert_feed':
+                return 'col-span-1 row-span-2';
             default:
                 return 'col-span-1';
         }
@@ -264,7 +312,7 @@ export function WidgetDashboard({
             {/* Add Widget Panel */}
             {showAddPanel && (
                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onClick={() => setShowAddPanel(false)}>
-                    <div className="bg-[#161b22] border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+                    <div className="bg-[#161b22] border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-lg font-semibold text-white">Add Widget</h3>
                             <button onClick={() => setShowAddPanel(false)} className="p-1 hover:bg-gray-700 rounded">
@@ -291,7 +339,7 @@ export function WidgetDashboard({
                                             <div className="text-xs text-gray-500">{widget.description}</div>
                                         </div>
                                         {isActive && (
-                                            <span className="text-xs text-gray-500">Already added</span>
+                                            <span className="text-xs text-gray-500">Active</span>
                                         )}
                                     </button>
                                 );
@@ -302,7 +350,7 @@ export function WidgetDashboard({
             )}
 
             {/* Widget Grid */}
-            <div className="grid grid-cols-3 gap-4 auto-rows-[minmax(150px,auto)]">
+            <div className="grid grid-cols-3 gap-4 auto-rows-[minmax(180px,auto)]">
                 {visibleWidgets.map((widget, index) => (
                     <div 
                         key={widget.id} 

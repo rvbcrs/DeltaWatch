@@ -103,6 +103,8 @@ export interface Settings {
     webhook_enabled: number;
     webhook_url?: string;
     app_url?: string;
+    digest_enabled: number;
+    digest_time: string;
     created_at: string;
 }
 

@@ -443,13 +443,13 @@ const Dashboard = () => {
                                 return key ? key.toUpperCase() : monitor.interval;
                             })()}
                         </span>
-                        {monitor.detected_price && monitor.detected_price > 0 && (
+                        {!!(monitor.detected_price && monitor.detected_price > 0) && (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border bg-emerald-900/30 text-emerald-400 border-emerald-900 flex items-center gap-1">
                                 💰 {new Intl.NumberFormat('nl-NL', { style: 'currency', currency: monitor.detected_currency || 'EUR' }).format(monitor.detected_price)}
                             </span>
                         )}
                         {/* Target Price Progress Badge */}
-                        {monitor.price_target && monitor.detected_price && (
+                        {!!(monitor.price_target && monitor.price_target > 0 && monitor.detected_price && monitor.detected_price > 0) && (
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border flex items-center gap-1 ${
                                 monitor.detected_price <= monitor.price_target 
                                     ? 'bg-green-900/30 text-green-400 border-green-900' 
@@ -461,7 +461,7 @@ const Dashboard = () => {
                             </span>
                         )}
                         {/* Stock Status Badge */}
-                        {monitor.stock_alert_enabled && monitor.last_stock_status && (
+                        {!!(monitor.stock_alert_enabled && monitor.last_stock_status) && (
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border flex items-center gap-1 ${
                                 monitor.last_stock_status === 'in_stock' 
                                     ? 'bg-green-900/30 text-green-400 border-green-900' 
@@ -470,7 +470,7 @@ const Dashboard = () => {
                                 {monitor.last_stock_status === 'in_stock' ? '✅ IN STOCK' : '❌ SOLD OUT'}
                             </span>
                         )}
-                        {monitor.history && monitor.history.length > 0 && (() => {
+                        {!!(monitor.history && monitor.history.length > 0) && (() => {
                             const historyWithStatus = monitor.history.filter(h => h.http_status !== null);
                             if (historyWithStatus.length === 0) return null;
                             const upCount = historyWithStatus.filter(h => (h.http_status ?? 0) < 400).length;
@@ -496,7 +496,7 @@ const Dashboard = () => {
                     
                     {monitor.type === 'text' && (
                         <p className="text-gray-400 text-sm truncate" title={monitor.last_value || monitor.selector_text}>
-                            {monitor.price_detection_enabled && monitor.detected_price && monitor.detected_price > 0
+                            {!!(monitor.price_detection_enabled && monitor.detected_price && monitor.detected_price > 0)
                                 ? new Intl.NumberFormat('nl-NL', { style: 'currency', currency: monitor.detected_currency || 'EUR' }).format(monitor.detected_price)
                                 : (monitor.last_value || monitor.selector_text || (monitor.last_check ? 'No content found' : 'Waiting for first check...'))}
                         </p>
@@ -511,7 +511,7 @@ const Dashboard = () => {
                     <div className="text-left md:text-right">
                     <div className="flex items-center gap-2 justify-start md:justify-end mb-1">
                         {/* Sparkline trend chart - auto-hides if no numeric values found */}
-                        {monitor.history && monitor.history.length >= 2 && (
+                        {!!(monitor.history && monitor.history.length >= 2) && (
                             <Sparkline 
                                 data={monitor.history.map(h => ({ value: h.value, status: h.status }))}
                                 width={50}

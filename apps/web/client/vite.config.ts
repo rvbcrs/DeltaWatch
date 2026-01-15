@@ -54,6 +54,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      '/test-digest': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      },
       '/data': {
         target: 'http://localhost:3000',
         changeOrigin: true,

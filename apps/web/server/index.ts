@@ -8,8 +8,9 @@ import fs from 'fs';
 import db from './db';
 import * as auth from './auth';
 import { summarizeChange, getModels, analyzePage } from './ai';
-import { startScheduler, checkSingleMonitor, previewScenario, executeScenario } from './scheduler';
+import { startScheduler, checkSingleMonitor, previewScenario, executeScenario, checkDigest } from './scheduler';
 import { sendNotification } from './notifications';
+import { getTestEmailHtml } from './templates';
 import { logError, logWarn, logInfo, getLogs, cleanupLogs, clearAllLogs, deleteLog } from './logger';
 import { enforceEnv } from './env';
 import type { Monitor, Settings, CheckHistory, AuthRequest } from './types';
@@ -632,6 +633,39 @@ app.get('/api/history', auth.authenticateToken, async (req: AuthRequest, res: Re
                 ...r,
                 monitor_name: r.monitor_name || new URL(r.monitor_url).hostname
             }))
+        });
+    });
+});
+
+// Timeline endpoint for checks per day (for widget dashboard)
+app.get('/api/stats/timeline', auth.authenticateToken, async (req: AuthRequest, res: Response) => {
+    const userId = req.user?.userId;
+    const days = parseInt(req.query.days as string) || 7;
+    
+    // Get aggregated stats per day
+    const query = `
+        SELECT 
+            DATE(check_history.created_at) as date,
+            COUNT(*) as total,
+            SUM(CASE WHEN check_history.status = 'changed' THEN 1 ELSE 0 END) as changed,
+            SUM(CASE WHEN check_history.status = 'error' THEN 1 ELSE 0 END) as errors
+        FROM check_history 
+        JOIN monitors ON check_history.monitor_id = monitors.id
+        WHERE monitors.user_id = ? 
+            AND check_history.created_at > datetime('now', '-' || ? || ' days')
+        GROUP BY DATE(check_history.created_at)
+        ORDER BY date DESC
+    `;
+    
+    db.all(query, [userId, days], (err: Error | null, rows: { date: string; total: number; changed: number; errors: number }[]) => {
+        if (err) {
+            console.error("Timeline Error:", err);
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json({
+            message: 'success',
+            data: rows
         });
     });
 });
@@ -1747,7 +1781,8 @@ app.put('/settings', auth.authenticateToken, (req: Request, res: Response) => {
         push_enabled, push_type, push_key1, push_key2,
         ai_enabled, ai_provider, ai_api_key, ai_model, ai_base_url,
         proxy_enabled, proxy_server, proxy_auth,
-        webhook_enabled, webhook_url
+        webhook_enabled, webhook_url,
+        digest_enabled, digest_time
     } = req.body;
 
     db.run(
@@ -1756,14 +1791,16 @@ app.put('/settings', auth.authenticateToken, (req: Request, res: Response) => {
         push_enabled = ?, push_type = ?, push_key1 = ?, push_key2 = ?,
         ai_enabled = ?, ai_provider = ?, ai_api_key = ?, ai_model = ?, ai_base_url = ?,
         proxy_enabled = ?, proxy_server = ?, proxy_auth = ?,
-        webhook_enabled = ?, webhook_url = ?
+        webhook_enabled = ?, webhook_url = ?,
+        digest_enabled = ?, digest_time = ?
         WHERE id = 1`,
         [
             email_enabled, email_host, email_port, email_secure, email_user, email_pass, email_to, email_from,
             push_enabled, push_type, push_key1, push_key2,
             ai_enabled, ai_provider, ai_api_key, ai_model, ai_base_url,
             proxy_enabled, proxy_server, proxy_auth,
-            webhook_enabled, webhook_url
+            webhook_enabled, webhook_url,
+            digest_enabled, digest_time
         ],
         function (err: Error | null) {
             if (err) {
@@ -1779,13 +1816,27 @@ app.put('/settings', auth.authenticateToken, (req: Request, res: Response) => {
 app.post('/test-notification', auth.authenticateToken, async (req: Request, res: Response) => {
     const { type } = req.body;
     try {
+        // Get username from request (set by authenticateToken)
+        const username = (req as any).user?.username;
+        const htmlMessage = getTestEmailHtml(username);
+        
         await sendNotification(
             'Test Notification',
             'This is a test notification from DeltaWatch.',
-            '<h2>Test Notification</h2><p>This is an <strong>HTML</strong> test notification from <a href="#">DeltaWatch</a>.</p>',
-            { type }
+            htmlMessage,
+            { type: type as any, force_instant: true }
         );
         res.json({ message: 'success' });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/test-digest', auth.authenticateToken, async (req: Request, res: Response) => {
+    try {
+        console.log('Manually triggering digest check...');
+        const result = await checkDigest(true);
+        res.json({ message: result });
     } catch (e: any) {
         res.status(500).json({ error: e.message });
     }

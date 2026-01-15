@@ -7,6 +7,7 @@ import type { Settings } from './types';
 
 interface SendNotificationOptions {
     type?: 'email' | 'push' | 'webhook';
+    force_instant?: boolean;
 }
 
 function sendRequest(url: string, method: string, headers: Record<string, string | number>, body: string): Promise<string> {
@@ -51,6 +52,23 @@ function getSettings(): Promise<Settings> {
     });
 }
 
+async function queueEmailNotification(subject: string, message: string, htmlMessage: string | null): Promise<void> {
+    console.log(`Queueing Email for Digest: ${subject}`);
+    return new Promise((resolve, reject) => {
+        const query = `INSERT INTO notification_queue (subject, message, html_message, created_at) VALUES (?, ?, ?, ?)`;
+        const now = new Date().toISOString();
+        db.run(query, [subject, message, htmlMessage, now], (err) => {
+            if (err) {
+                console.error("Error queueing notification:", err);
+                reject(err);
+            } else {
+                console.log("Notification queued successfully");
+                resolve();
+            }
+        });
+    });
+}
+
 async function sendNotification(
     subject: string, 
     message: string, 
@@ -74,7 +92,11 @@ async function sendNotification(
         const targetType = options.type;
 
         if (settings.email_enabled && (!targetType || targetType === 'email')) {
-            promises.push(sendEmail(settings, subject, message, htmlMessage));
+            if (settings.digest_enabled && !options.force_instant) {
+                promises.push(queueEmailNotification(subject, message, htmlMessage));
+            } else {
+                promises.push(sendEmail(settings, subject, message, htmlMessage));
+            }
         }
 
         if (settings.push_enabled && (!targetType || targetType === 'push')) {

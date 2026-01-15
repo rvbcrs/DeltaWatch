@@ -415,6 +415,18 @@ function initDb(): void {
             }
         });
 
+        // Notification Queue Table for Digest
+        db.run(`CREATE TABLE IF NOT EXISTS notification_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            message TEXT NOT NULL,
+            html_message TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending'
+        )`, (err) => {
+            if (err) console.error("Error creating notification_queue table:", err);
+        });
+
         // Migration: Add Verification columns to users
         db.all("PRAGMA table_info(users)", (err: Error | null, rows: TableColumn[]) => {
             if (!err && rows) {
@@ -439,6 +451,20 @@ function initDb(): void {
                 }
             } else if (err) {
                 console.error("Error checking users table info:", err);
+            }
+        });
+
+        // Migration: Add Digest columns to settings
+        db.all("PRAGMA table_info(settings)", (err: Error | null, rows: TableColumn[]) => {
+            if (!err && rows) {
+                const hasDigestEnabled = rows.some(r => r.name === 'digest_enabled');
+                if (!hasDigestEnabled) {
+                    console.log('Migrating: Adding Digest columns to settings table...');
+                    db.run("ALTER TABLE settings ADD COLUMN digest_enabled BOOLEAN DEFAULT 0");
+                    db.run("ALTER TABLE settings ADD COLUMN digest_time TEXT DEFAULT '09:00'");
+                }
+            } else if (err) {
+                console.error("Error checking settings table info:", err);
             }
         });
     });

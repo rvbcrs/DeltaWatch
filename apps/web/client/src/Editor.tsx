@@ -3,8 +3,9 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from './contexts/ToastContext';
-import { MousePointerClick, ArrowLeft, ScanEye, FileText, Image as ImageIcon } from 'lucide-react';
+import { MousePointerClick, ArrowLeft, ScanEye, FileText, Image as ImageIcon, Workflow } from 'lucide-react';
 import { useAuth } from './contexts/AuthContext';
+import ScenarioBuilder from './ScenarioBuilder';
 
 interface SelectedElement {
     selector: string;
@@ -50,6 +51,8 @@ function Editor() {
   const [priceThresholdMax, setPriceThresholdMax] = useState<number | ''>('');
   const [priceTarget, setPriceTarget] = useState<number | ''>('');
   const [stockAlertEnabled, setStockAlertEnabled] = useState(false);
+  const [scenarioConfig, setScenarioConfig] = useState<any[]>([]);
+  const [showScenario, setShowScenario] = useState(false);
   const [priceScanResult, setPriceScanResult] = useState<{
       success: boolean; 
       formatted?: string; 
@@ -59,6 +62,7 @@ function Editor() {
       currency?: string;
   } | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [pickingStepIndex, setPickingStepIndex] = useState<number | null>(null);
 
   const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false)
@@ -135,6 +139,21 @@ function Editor() {
                             });
                         }
                         
+                        // Load scenario config
+                        if (monitor.scenario_config) {
+                            try {
+                                const parsed = typeof monitor.scenario_config === 'string' 
+                                    ? JSON.parse(monitor.scenario_config) 
+                                    : monitor.scenario_config;
+                                setScenarioConfig(parsed);
+                                if (Array.isArray(parsed) && parsed.length > 0) {
+                                    setShowScenario(true);
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse scenario_config', e);
+                            }
+                        }
+                        
                         setProxyUrl(`${API_BASE}/proxy?url=${encodeURIComponent(monitor.url)}`);
                     } else {
                         showToast(t('editor.toasts.monitor_not_found'), 'error');
@@ -186,8 +205,18 @@ function Editor() {
       const msgEvent = event as unknown as MessageEvent;
       const { type, payload } = msgEvent.data;
       if (type === 'selected') {
-        console.log('Selected:', payload)
-        setSelectedElement(payload as SelectedElement)
+        if (pickingStepIndex !== null) {
+             const updated = [...scenarioConfig];
+             if (updated[pickingStepIndex]) {
+                 updated[pickingStepIndex] = { ...updated[pickingStepIndex], selector: (payload as SelectedElement).selector };
+                 setScenarioConfig(updated);
+             }
+             setPickingStepIndex(null);
+             showToast(t('editor.toasts.selector_picked'), 'success');
+        } else {
+            console.log('Selected:', payload)
+            setSelectedElement(payload as SelectedElement)
+        }
       } else if (type === 'deselected') {
           if (selectedElement && selectedElement.selector === payload) {
               setSelectedElement(null)
@@ -234,7 +263,7 @@ function Editor() {
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [selectedElement, monitorType, isSelecting, t, navigate]);
+  }, [selectedElement, monitorType, isSelecting, t, navigate, pickingStepIndex, scenarioConfig]);
 
   // Sync selection mode with Iframe
   useEffect(() => {
@@ -244,10 +273,12 @@ function Editor() {
         // Disabled for Price Mode, Visual Mode, and Full Page Body Text Mode
         let shouldBeActive = false;
         
-        if (monitorType === 'text') {
+        if (monitorType === 'text' || pickingStepIndex !== null) {
              // Only active if we are selecting AND it's not a full-page body monitor
              // If selectedElement is body, we probably want to disable selection to show full page clearly
-             if (selectedElement && selectedElement.selector === 'body') {
+             if (pickingStepIndex !== null) {
+                 shouldBeActive = true;
+             } else if (selectedElement && selectedElement.selector === 'body') {
                  shouldBeActive = false;
              } else {
                  shouldBeActive = isSelecting;
@@ -264,7 +295,7 @@ function Editor() {
              iframe.contentWindow.postMessage({ type: 'clear' }, '*');
         }
     }
-  }, [isSelecting, proxyUrl, monitorType, selectedElement]);
+  }, [isSelecting, proxyUrl, monitorType, selectedElement, pickingStepIndex]);
 
   const handleGo = async () => {
     if (!url) return;
@@ -328,7 +359,8 @@ function Editor() {
                 price_threshold_min: priceThresholdMin || null,
                 price_threshold_max: priceThresholdMax || null,
                 price_target: priceTarget || null,
-                stock_alert_enabled: stockAlertEnabled ? 1 : 0
+                stock_alert_enabled: stockAlertEnabled ? 1 : 0,
+                scenario_config: scenarioConfig.length > 0 ? JSON.stringify(scenarioConfig) : null
             })
         });
         const data = await response.json();
@@ -437,8 +469,10 @@ function Editor() {
     
     // STRICT Mode Logic for Iframe Load
     let shouldBeActive = false;
-    if (monitorType === 'text') {
-         if (selectedElement && selectedElement.selector === 'body') {
+    if (monitorType === 'text' || pickingStepIndex !== null) {
+         if (pickingStepIndex !== null) {
+             shouldBeActive = true;
+         } else if (selectedElement && selectedElement.selector === 'body') {
              shouldBeActive = false; 
          } else {
              shouldBeActive = isSelecting;
@@ -690,7 +724,7 @@ function Editor() {
           {/* STEP 3: CONFIGURATION (Existing UI Wrapped) */}
           {step === 'config' && (
                 <div className="flex flex-1 w-full h-full"> 
-                    {selectedElement && monitorType === 'text' && selectedElement.selector !== 'body' && (
+                    {monitorType === 'text' && selectedElement?.selector !== 'body' && (
                         <div className="w-80 bg-[#161b22] border-r border-gray-800 p-4 shadow-lg flex flex-col overflow-y-auto z-20">
                             <button onClick={() => setStep('type')} className="mb-4 text-xs text-gray-500 hover:text-white flex items-center gap-1">
                                 <ArrowLeft size={12} /> {t('monitor_details.back')}
@@ -718,8 +752,8 @@ function Editor() {
                             <div className="flex gap-2 mb-2">
                                 <input 
                                     type="text"
-                                    value={selectedElement.selector}
-                                    onChange={(e) => setSelectedElement({ ...selectedElement, selector: e.target.value })}
+                                    value={selectedElement?.selector || ''}
+                                    onChange={(e) => setSelectedElement(prev => prev ? { ...prev, selector: e.target.value } : { selector: e.target.value, text: '' })}
                                     className="flex-1 bg-[#0d1117] p-2 rounded text-xs font-mono break-all border border-gray-700 text-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
                                     placeholder={t('editor.selector_placeholder')}
                                 />
@@ -733,14 +767,14 @@ function Editor() {
                             </div>
                             <div className="mb-4">
                                 <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">{t('editor.current_text')}</h3>
-                                <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200 h-24 overflow-y-auto font-mono text-xs">{selectedElement.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
+                                <p className="p-2 bg-[#0d1117] rounded border border-gray-700 mt-1 text-sm text-gray-200 h-24 overflow-y-auto font-mono text-xs">{selectedElement?.text || <span className="text-gray-500 italic">{t('editor.no_text')}</span>}</p>
                             </div>
 
                             {/* DOM Hierarchy */}
                             <div className="mb-4">
                                 <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{t('editor.hierarchy', 'Hierarchy')}</h3>
                                 <div className="flex flex-wrap gap-1 bg-[#0d1117] p-2 rounded border border-gray-700">
-                                    {selectedElement.selector.split('>').map((segment, index, array) => (
+                                    {selectedElement?.selector ? selectedElement.selector.split('>').map((segment, index, array) => (
                                         <div key={index} className="flex items-center">
                                             {index > 0 && <span className="text-gray-600 mx-1">›</span>}
                                             <button
@@ -760,7 +794,9 @@ function Editor() {
                                                 {segment.trim().replace(/\[.*?\]/g, '').replace(/\:nth-of-type\(\d+\)/g, '') || segment.trim()}
                                             </button>
                                         </div>
-                                    ))}
+                                    )) : (
+                                        <span className="text-gray-500 text-xs italic">Select an element on the page...</span>
+                                    )}
                                 </div>
                             </div>
                             
@@ -808,6 +844,55 @@ function Editor() {
                                             {[1, 2, 3, 5, 10].map(n => <option key={n} value={n}>{t('editor.retries', {count: n})}</option>)}
                                         </select>
                                     </div>
+                                </div>
+
+                                {/* Browser Interactions */}
+                                <div className="border-t border-gray-700 pt-4 mt-4">
+                                    <button 
+                                        onClick={() => setShowScenario(!showScenario)}
+                                        className="flex items-center justify-between w-full text-left mb-3"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <Workflow size={16} className="text-purple-400" />
+                                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                                                Browser Interactions
+                                            </span>
+                                            {scenarioConfig.length > 0 && (
+                                                <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                                                    {scenarioConfig.length}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <span className="text-gray-500 text-xs">
+                                            {showScenario ? '▼' : '▶'}
+                                        </span>
+                                    </button>
+                                    
+                                    {!showScenario && (
+                                        <p className="text-xs text-gray-500 italic mb-2">
+                                            Add steps like clicking buttons or waiting before checking the value.
+                                        </p>
+                                    )}
+                                    
+                                    {showScenario && (
+                                        <ScenarioBuilder
+                                            value={scenarioConfig}
+                                            onChange={(steps) => setScenarioConfig(steps)}
+                                            onPick={(index) => {
+                                                setPickingStepIndex(index);
+                                                setIsSelecting(true);
+                                            }}
+                                            activeIndex={pickingStepIndex}
+                                            onRunAll={() => {
+                                                if (!url) return;
+                                                setIsLoading(true);
+                                                const stepsJson = JSON.stringify(scenarioConfig);
+                                                const newProxyUrl = `${API_BASE}/proxy?url=${encodeURIComponent(url)}&scenario=${encodeURIComponent(stepsJson)}`;
+                                                setProxyUrl(newProxyUrl);
+                                                showToast("Running scenario and reloading preview...", 'info');
+                                            }}
+                                        />
+                                    )}
                                 </div>
                              </div>
                         </div>
@@ -969,6 +1054,55 @@ function Editor() {
                                         <option value="0 0 * * *">{t('editor.intervals.24h')}</option>
                                     </select>
                                 </div>
+
+                                {/* Browser Interactions */}
+                                <div className="border-t border-gray-700 pt-4 mt-4">
+                                    <button 
+                                        onClick={() => setShowScenario(!showScenario)}
+                                        className="flex items-center justify-between w-full text-left mb-3"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <Workflow size={16} className="text-purple-400" />
+                                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                                                Browser Interactions
+                                            </span>
+                                            {scenarioConfig.length > 0 && (
+                                                <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                                                    {scenarioConfig.length}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <span className="text-gray-500 text-xs">
+                                            {showScenario ? '▼' : '▶'}
+                                        </span>
+                                    </button>
+                                    
+                                    {!showScenario && (
+                                        <p className="text-xs text-gray-500 italic mb-2">
+                                            Add steps like clicking buttons or waiting before checking the value.
+                                        </p>
+                                    )}
+                                    
+                                    {showScenario && (
+                                        <ScenarioBuilder
+                                            value={scenarioConfig}
+                                            onChange={(steps) => setScenarioConfig(steps)}
+                                            onPick={(index) => {
+                                                setPickingStepIndex(index);
+                                                setIsSelecting(true);
+                                            }}
+                                            activeIndex={pickingStepIndex}
+                                            onRunAll={() => {
+                                                if (!url) return;
+                                                setIsLoading(true);
+                                                const stepsJson = JSON.stringify(scenarioConfig);
+                                                const newProxyUrl = `${API_BASE}/proxy?url=${encodeURIComponent(url)}&scenario=${encodeURIComponent(stepsJson)}`;
+                                                setProxyUrl(newProxyUrl);
+                                                showToast("Running scenario and reloading preview...", 'info');
+                                            }}
+                                        />
+                                    )}
+                                </div>
                              </div>
 
                          </div>
@@ -1028,6 +1162,55 @@ function Editor() {
                                         <option value="0 0 * * 0">{t('editor.intervals.1w')}</option>
                                     </select>
                                 </div>
+
+                                {/* Browser Interactions */}
+                                <div className="border-t border-gray-700 pt-4 mt-4">
+                                    <button 
+                                        onClick={() => setShowScenario(!showScenario)}
+                                        className="flex items-center justify-between w-full text-left mb-3"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <Workflow size={16} className="text-purple-400" />
+                                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                                                Browser Interactions
+                                            </span>
+                                            {scenarioConfig.length > 0 && (
+                                                <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                                                    {scenarioConfig.length}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <span className="text-gray-500 text-xs">
+                                            {showScenario ? '▼' : '▶'}
+                                        </span>
+                                    </button>
+                                    
+                                    {!showScenario && (
+                                        <p className="text-xs text-gray-500 italic mb-2">
+                                            Add steps like clicking buttons or waiting before checking the value.
+                                        </p>
+                                    )}
+                                    
+                                    {showScenario && (
+                                        <ScenarioBuilder
+                                            value={scenarioConfig}
+                                            onChange={(steps) => setScenarioConfig(steps)}
+                                            onPick={(index) => {
+                                                setPickingStepIndex(index);
+                                                setIsSelecting(true);
+                                            }}
+                                            activeIndex={pickingStepIndex}
+                                            onRunAll={() => {
+                                                if (!url) return;
+                                                setIsLoading(true);
+                                                const stepsJson = JSON.stringify(scenarioConfig);
+                                                const newProxyUrl = `${API_BASE}/proxy?url=${encodeURIComponent(url)}&scenario=${encodeURIComponent(stepsJson)}`;
+                                                setProxyUrl(newProxyUrl);
+                                                showToast("Running scenario and reloading preview...", 'info');
+                                            }}
+                                        />
+                                    )}
+                                </div>
                              </div>
                          </div>
                     )}
@@ -1040,6 +1223,7 @@ function Editor() {
                             {/* Iframe container */}
                             <div className="absolute inset-0 bg-white">
                                 <iframe 
+                                    key={proxyUrl}
                                     src={proxyUrl} 
                                     className="w-full h-full border-0"
                                     title="Website Preview"

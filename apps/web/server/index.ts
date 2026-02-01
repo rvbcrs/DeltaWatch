@@ -1075,6 +1075,24 @@ app.get('/proxy', async (req: Request, res: Response) => {
             console.log("Navigation error (likely timeout), proceeding:", e.message);
         }
 
+        const scenarioParam = req.query.scenario as string | undefined;
+        if (scenarioParam) {
+            console.log(`[Proxy] Received scenario param (length: ${scenarioParam.length})`);
+            try {
+                const steps = typeof scenarioParam === 'string' ? JSON.parse(scenarioParam) : scenarioParam;
+                if (Array.isArray(steps) && steps.length > 0) {
+                    console.log(`[Proxy] Executing ${steps.length} scenario steps:`, JSON.stringify(steps));
+                    await executeScenario(page, steps);
+                    console.log('[Proxy] Scenario execution completed, waiting for hydration...');
+                    await page.waitForTimeout(1000); // Wait for hydration after steps
+                } else {
+                    console.log('[Proxy] Scenario parsed but empty or invalid');
+                }
+            } catch (e) {
+                console.error('[Proxy] Scenario execution error:', e);
+            }
+        }
+
         const selectorScript = fs.readFileSync(getPublicPath('selector.js'), 'utf8');
 
         // Inject scripts wrapper
@@ -1088,7 +1106,7 @@ app.get('/proxy', async (req: Request, res: Response) => {
                 }
                 
                 // Remove problematic elements
-                const elementsToRemove = document.querySelectorAll('script, video, audio, object, embed, iframe, noscript, meta[http-equiv="Content-Security-Policy"], meta[http-equiv="X-Frame-Options"]');
+                const elementsToRemove = document.querySelectorAll('video, audio, object, embed, iframe, noscript, meta[http-equiv="Content-Security-Policy"], meta[http-equiv="X-Frame-Options"]');
                 elementsToRemove.forEach(el => el.remove());
 
                 const overlaysToRemove = document.querySelectorAll('#preact-border-shadow-host, .sc-pyqe1m-4, .sc-12saxh8-0, [data-testid="cookie-banner"]');
@@ -1399,12 +1417,12 @@ app.patch('/monitors/reorder', auth.authenticateToken, (req: AuthRequest, res: R
 
 // Add a new monitor
 app.post('/monitors', auth.authenticateToken, (req: AuthRequest, res: Response) => {
-    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled } = req.body;
+    const { url, selector, selector_text, interval, type, name, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled } = req.body;
     const userId = req.user?.userId;
 
     db.run(
-        `INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0, group_id || null, price_detection_enabled || 0, price_threshold_min || null, price_threshold_max || null, price_target || null, stock_alert_enabled || 0],
+        `INSERT INTO monitors (user_id, url, selector, selector_text, interval, type, name, notify_config, ai_prompt, scenario_config, tags, keywords, ai_only_visual, group_id, price_detection_enabled, price_threshold_min, price_threshold_max, price_target, stock_alert_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, url, selector, selector_text || '', interval || '30m', type || 'text', name, JSON.stringify(notify_config), ai_prompt, scenario_config, JSON.stringify(tags), JSON.stringify(keywords), ai_only_visual ? 1 : 0, group_id || null, price_detection_enabled || 0, price_threshold_min || null, price_threshold_max || null, price_target || null, stock_alert_enabled || 0],
         function (this: { lastID: number }, err: Error | null) {
             if (err) {
                 res.status(500).json({ error: err.message });

@@ -122,7 +122,7 @@ async function isBrowserHealthy(pb: PooledBrowser): Promise<boolean> {
 /**
  * Acquire a browser context from the pool
  */
-export async function acquireBrowser(): Promise<{ context: BrowserContext; release: () => Promise<void> }> {
+export async function acquireBrowser(): Promise<{ context: BrowserContext; release: (destroy?: boolean) => Promise<void> }> {
     if (isShuttingDown) {
         throw new Error('Browser pool is shutting down');
     }
@@ -174,14 +174,27 @@ export async function acquireBrowser(): Promise<{ context: BrowserContext; relea
     
     const context = await pooledBrowser.browser.newContext();
     
-    const release = async () => {
+    const release = async (destroy: boolean = false) => {
         try {
             await context.close();
         } catch (e) {
             // Context might already be closed
         }
-        pooledBrowser!.inUse = false;
-        pooledBrowser!.lastUsed = Date.now();
+
+        if (destroy) {
+            try {
+                logWarn('browser', 'Destroying unhealthy browser instance requested by scheduler');
+                await pooledBrowser!.browser.close();
+            } catch (e) {
+                // Ignore close errors
+            }
+            // Remove from pool
+            const idx = browserPool.indexOf(pooledBrowser!);
+            if (idx !== -1) browserPool.splice(idx, 1);
+        } else {
+            pooledBrowser!.inUse = false;
+            pooledBrowser!.lastUsed = Date.now();
+        }
     };
     
     return { context, release };

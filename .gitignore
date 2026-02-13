@@ -12,3 +12,4 @@ apps/web/server/dist
 apps/web/public/screenshots/*
 *.env
 apps/web/server/data/*.db
+ha-addon

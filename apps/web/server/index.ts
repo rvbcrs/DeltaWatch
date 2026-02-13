@@ -1,3 +1,9 @@
+import './init-env'; // MUST BE FIRST to load HA config before DB init
+import { enforceEnv } from './env';
+
+// Validate environment at startup
+const envConfig = enforceEnv();
+
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { chromium } from 'playwright-extra';
@@ -12,11 +18,7 @@ import { startScheduler, checkSingleMonitor, previewScenario, executeScenario, c
 import { sendNotification } from './notifications';
 import { getTestEmailHtml } from './templates';
 import { logError, logWarn, logInfo, getLogs, cleanupLogs, clearAllLogs, deleteLog } from './logger';
-import { enforceEnv } from './env';
 import type { Monitor, Settings, CheckHistory, AuthRequest } from './types';
-
-// Validate environment at startup
-const envConfig = enforceEnv();
 
 chromium.use(stealth());
 

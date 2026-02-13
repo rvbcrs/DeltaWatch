@@ -2,6 +2,7 @@
  * Environment validation and configuration
  * Validates required environment variables at startup
  */
+import fs from 'fs';
 
 interface EnvConfig {
     // Required
@@ -28,6 +29,26 @@ interface ValidationResult {
  * Validate environment variables and return configuration
  */
 export function validateEnv(): ValidationResult {
+    // HA Addon Fallback: Read from /data/options.json if available
+    try {
+        if (fs.existsSync('/data/options.json')) {
+            const options = JSON.parse(fs.readFileSync('/data/options.json', 'utf8'));
+            console.log('Main: Loaded configuration from Home Assistant /data/options.json');
+            
+            // Map HA options to Env vars if Env vars are missing
+            if (!process.env.LOG_LEVEL && options.log_level) process.env.LOG_LEVEL = options.log_level;
+            if (!process.env.GOOGLE_CLIENT_ID && options.google_client_id) process.env.GOOGLE_CLIENT_ID = options.google_client_id;
+            if (!process.env.ACCESS_TOKEN_SECRET && options.access_token_secret) process.env.ACCESS_TOKEN_SECRET = options.access_token_secret;
+            if (!process.env.APP_URL && options.app_url) process.env.APP_URL = options.app_url;
+            if (!process.env.DATA_DIR && options.data_dir) process.env.DATA_DIR = options.data_dir;
+            
+            // Force production mode in HA if not set
+            if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
+        }
+    } catch (err) {
+        console.error('Failed to load HA options:', err);
+    }
+
     const errors: string[] = [];
     const warnings: string[] = [];
     

@@ -22,6 +22,11 @@ interface UserRow {
 }
 
 const dbPath = path.join(dataDir, 'monitors.db');
+const dbExists = fs.existsSync(dbPath);
+
+console.log(`[DB] Database path: ${dbPath}`);
+console.log(`[DB] Database file exists: ${dbExists ? 'YES' : 'NO (Creating new one)'}`);
+
 const db = new verbose.Database(dbPath, (err) => {
     if (err) {
         console.error('Error opening database', err.message);
@@ -240,18 +245,7 @@ function initDb(): void {
             if (err) console.error("Error creating groups table:", err);
         });
 
-        // Migration: Add screenshot columns to check_history
-        db.all("PRAGMA table_info(check_history)", (err: Error | null, rows: TableColumn[]) => {
-            if (!err && rows) {
-                const hasScreenshot = rows.some(r => r.name === 'screenshot_path');
-                if (!hasScreenshot) {
-                    console.log('Migrating: Adding screenshot columns to check_history...');
-                    db.run("ALTER TABLE check_history ADD COLUMN screenshot_path TEXT");
-                    db.run("ALTER TABLE check_history ADD COLUMN prev_screenshot_path TEXT");
-                    db.run("ALTER TABLE check_history ADD COLUMN diff_screenshot_path TEXT");
-                }
-            }
-        });
+
 
         db.run(`CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -325,20 +319,49 @@ function initDb(): void {
         // Migration: Add value column to check_history if it doesn't exist
         db.all("PRAGMA table_info(check_history)", (err: Error | null, rows: TableColumn[]) => {
             if (!err && rows) {
+                // Check for screenshot columns (moved here to ensure table exists)
+                const hasScreenshot = rows.some(r => r.name === 'screenshot_path');
+                if (!hasScreenshot) {
+                    console.log('Migrating: Adding screenshot_path column to check_history...');
+                    db.run("ALTER TABLE check_history ADD COLUMN screenshot_path TEXT", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
+                }
+                const hasPrevScreenshot = rows.some(r => r.name === 'prev_screenshot_path');
+                if (!hasPrevScreenshot) {
+                    console.log('Migrating: Adding prev_screenshot_path column to check_history...');
+                    db.run("ALTER TABLE check_history ADD COLUMN prev_screenshot_path TEXT", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
+                }
+                const hasDiffScreenshot = rows.some(r => r.name === 'diff_screenshot_path');
+                if (!hasDiffScreenshot) {
+                    console.log('Migrating: Adding diff_screenshot_path column to check_history...');
+                    db.run("ALTER TABLE check_history ADD COLUMN diff_screenshot_path TEXT", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
+                }
+
                 const hasValue = rows.some(r => r.name === 'value');
                 if (!hasValue) {
                     console.log('Migrating: Adding value column to check_history table...');
-                    db.run("ALTER TABLE check_history ADD COLUMN value TEXT");
+                    db.run("ALTER TABLE check_history ADD COLUMN value TEXT", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
                 }
                 const hasAiSummary = rows.some(r => r.name === 'ai_summary');
                 if (!hasAiSummary) {
                     console.log('Migrating: Adding ai_summary column to check_history table...');
-                    db.run("ALTER TABLE check_history ADD COLUMN ai_summary TEXT");
+                    db.run("ALTER TABLE check_history ADD COLUMN ai_summary TEXT", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
                 }
                 const hasHttpStatus = rows.some(r => r.name === 'http_status');
                 if (!hasHttpStatus) {
                     console.log('Migrating: Adding http_status column to check_history table...');
-                    db.run("ALTER TABLE check_history ADD COLUMN http_status INTEGER");
+                    db.run("ALTER TABLE check_history ADD COLUMN http_status INTEGER", (err) => {
+                        if (err && !err.message.includes('duplicate column')) console.error(err);
+                    });
                 }
             } else if (err) {
                 console.error("Error checking check_history table info:", err);

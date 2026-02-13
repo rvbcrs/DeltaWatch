@@ -246,106 +246,114 @@ async function withRetry<T>(
 
 async function checkMonitors(): Promise<void> {
     console.log('Running monitor check...');
-    db.all("SELECT * FROM monitors WHERE active = 1", [], async (err: Error | null, monitors: Monitor[]) => {
-        if (err) {
-            logError('scheduler', `Database error fetching monitors: ${err.message}`);
-            return;
-        }
-
-        const now = new Date();
-        const dueMonitors = monitors.filter(m => {
-            // Check if monitor is in cooldown due to consecutive failures
-            const consecutiveFailures = (m as any).consecutive_failures || 0;
-            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && m.last_check) {
-                // Exponential backoff: double cooldown for each failure above threshold
-                const failureMultiplier = Math.min(Math.pow(2, consecutiveFailures - MAX_CONSECUTIVE_FAILURES), MAX_COOLDOWN_MINUTES / BASE_COOLDOWN_MINUTES);
-                const actualCooldown = Math.min(BASE_COOLDOWN_MINUTES * failureMultiplier, MAX_COOLDOWN_MINUTES);
-                const cooldownEnd = new Date(new Date(m.last_check).getTime() + actualCooldown * 60000);
-                if (now < cooldownEnd) {
-                    const minsRemaining = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
-                    console.log(`[${m.name || m.id}] Skipping - in cooldown (${consecutiveFailures} failures, ${minsRemaining}m remaining)`);
-                    return false;
-                }
-                // Cooldown expired, try again
-                console.log(`[${m.name || m.id}] Cooldown expired after ${actualCooldown}m, retrying...`);
+    
+    return new Promise((resolve, reject) => {
+        db.all("SELECT * FROM monitors WHERE active = 1", [], async (err: Error | null, monitors: Monitor[]) => {
+            if (err) {
+                logError('scheduler', `Database error fetching monitors: ${err.message}`);
+                resolve();
+                return;
             }
-            
-            // Check if it's time for the next check
-            if (!m.last_check) return true;
-            const lastCheck = new Date(m.last_check);
-            const intervalMins = INTERVAL_MINUTES[m.interval] || 60;
-            const nextCheck = new Date(lastCheck.getTime() + intervalMins * 60000);
-            return now >= nextCheck;
-        });
 
-        console.log(`Found ${dueMonitors.length} monitors due for check.`);
-
-        if (dueMonitors.length === 0) return;
-
-        // Use browser pool for efficient resource management
-        const { acquireBrowser } = await import('./browserPool');
-        
-
-        try {
-            // Process monitors sequentially to ensure absolute isolation and prevent race conditions
-            for (const monitor of dueMonitors) {
-                // Yield to event loop between checks to prevent blocking node-cron
-                await new Promise(resolve => setImmediate(resolve));
+            const now = new Date();
+            const dueMonitors = monitors.filter(m => {
+                // Check if monitor is in cooldown due to consecutive failures
+                const consecutiveFailures = (m as any).consecutive_failures || 0;
+                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && m.last_check) {
+                    // Exponential backoff: double cooldown for each failure above threshold
+                    const failureMultiplier = Math.min(Math.pow(2, consecutiveFailures - MAX_CONSECUTIVE_FAILURES), MAX_COOLDOWN_MINUTES / BASE_COOLDOWN_MINUTES);
+                    const actualCooldown = Math.min(BASE_COOLDOWN_MINUTES * failureMultiplier, MAX_COOLDOWN_MINUTES);
+                    const cooldownEnd = new Date(new Date(m.last_check).getTime() + actualCooldown * 60000);
+                    if (now < cooldownEnd) {
+                        const minsRemaining = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
+                        console.log(`[${m.name || m.id}] Skipping - in cooldown (${consecutiveFailures} failures, ${minsRemaining}m remaining)`);
+                        return false;
+                    }
+                    // Cooldown expired, try again
+                    console.log(`[${m.name || m.id}] Cooldown expired after ${actualCooldown}m, retrying...`);
+                }
                 
-                let pooledContext: { context: BrowserContext; release: (destroy?: boolean) => Promise<void> } | undefined;
-                let shouldDestroy = false;
+                // Check if it's time for the next check
+                if (!m.last_check) return true;
+                const lastCheck = new Date(m.last_check);
+                const intervalMins = INTERVAL_MINUTES[m.interval] || 60;
+                const nextCheck = new Date(lastCheck.getTime() + intervalMins * 60000);
+                return now >= nextCheck;
+            });
 
-                try {
-                    // Acquire a FRESH context for THIS specific check
-                    // This ensures "maximal separation" - if this check crashes/hangs, 
-                    // it won't affect the others.
-                    pooledContext = await acquireBrowser();
+            console.log(`Found ${dueMonitors.length} monitors due for check.`);
 
-                    // Wrap each check in an overall timeout to prevent indefinite blocking
-                    await Promise.race([
-                        checkSingleMonitor(monitor, pooledContext.context),
-                        new Promise<void>((_, reject) => 
-                            setTimeout(() => {
-                                shouldDestroy = true; // Mark for destruction if we timed out
-                                reject(new Error('Overall check timeout exceeded'));
-                            }, OVERALL_CHECK_TIMEOUT)
-                        )
-                    ]);
-                    lastSuccessfulCheck = Date.now();
-                } catch (timeoutErr: any) {
-                    console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
-                    schedulerErrors++;
+            if (dueMonitors.length === 0) {
+                resolve();
+                return;
+            }
+
+            // Use browser pool for efficient resource management
+            const { acquireBrowser } = await import('./browserPool');
+            
+            try {
+                // Process monitors sequentially to ensure absolute isolation and prevent race conditions
+                for (const monitor of dueMonitors) {
+                    // Yield to event loop between checks to prevent blocking node-cron
+                    await new Promise(resolve => setImmediate(resolve));
                     
-                    // If we timed out or had a browser error, we should probably recycle this browser instance
-                    if (timeoutErr.message.includes('timeout') || isBrowserError(timeoutErr.message)) {
-                        shouldDestroy = true;
-                    }
+                    let pooledContext: { context: BrowserContext; release: (destroy?: boolean) => Promise<void> } | undefined;
+                    let shouldDestroy = false;
 
-                    // Only increment failure count for non-browser errors
-                    if (!isBrowserError(timeoutErr.message)) {
-                        db.run("UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?", 
-                            [new Date().toISOString(), monitor.id]);
-                    } else {
-                        console.log(`[${monitor.name || monitor.id}] Browser error - not counting as failure`);
-                        db.run("UPDATE monitors SET last_check = ? WHERE id = ?", 
-                            [new Date().toISOString(), monitor.id]);
-                    }
-                } finally {
-                    if (pooledContext) {
-                        try {
-                            // Release the browser back to the pool (or destroy it if it was unhealthy)
-                            await pooledContext.release(shouldDestroy);
-                        } catch (releaseErr) {
-                            // Ignore release errors
+                    try {
+                        // Acquire a FRESH context for THIS specific check
+                        // This ensures "maximal separation" - if this check crashes/hangs, 
+                        // it won't affect the others.
+                        pooledContext = await acquireBrowser();
+
+                        // Wrap each check in an overall timeout to prevent indefinite blocking
+                        await Promise.race([
+                            checkSingleMonitor(monitor, pooledContext.context),
+                            new Promise<void>((_, reject) => 
+                                setTimeout(() => {
+                                    shouldDestroy = true; // Mark for destruction if we timed out
+                                    reject(new Error('Overall check timeout exceeded'));
+                                }, OVERALL_CHECK_TIMEOUT)
+                            )
+                        ]);
+                        lastSuccessfulCheck = Date.now();
+                    } catch (timeoutErr: any) {
+                        console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
+                        schedulerErrors++;
+                        
+                        // If we timed out or had a browser error, we should probably recycle this browser instance
+                        if (timeoutErr.message.includes('timeout') || isBrowserError(timeoutErr.message)) {
+                            shouldDestroy = true;
+                        }
+
+                        // Only increment failure count for non-browser errors
+                        if (!isBrowserError(timeoutErr.message)) {
+                            db.run("UPDATE monitors SET consecutive_failures = consecutive_failures + 1, last_check = ? WHERE id = ?", 
+                                [new Date().toISOString(), monitor.id]);
+                        } else {
+                            console.log(`[${monitor.name || monitor.id}] Browser error - not counting as failure`);
+                            db.run("UPDATE monitors SET last_check = ? WHERE id = ?", 
+                                [new Date().toISOString(), monitor.id]);
+                        }
+                    } finally {
+                        if (pooledContext) {
+                            try {
+                                // Release the browser back to the pool (or destroy it if it was unhealthy)
+                                await pooledContext.release(shouldDestroy);
+                            } catch (releaseErr) {
+                                // Ignore release errors
+                            }
                         }
                     }
                 }
+                resolve();
+                
+            } catch (e: any) {
+                logError('scheduler', `Scheduler loop error: ${e.message}`, e.stack);
+                schedulerErrors++;
+                resolve();
             }
-            
-        } catch (e: any) {
-            logError('scheduler', `Scheduler loop error: ${e.message}`, e.stack);
-            schedulerErrors++;
-        }
+        });
     });
 }
 
@@ -659,7 +667,9 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
         let status = 'unchanged';
 
         screenshotPath = getPublicPath('screenshots', `monitor-${monitor.id}-${Date.now()}.png`);
-        await page.screenshot({ path: screenshotPath, fullPage: true });
+        // Capture viewport only (fullPage causes hangs on large pages/infinite scrolls)
+        // Add strict timeout to prevent blocking
+        await page.screenshot({ path: screenshotPath, fullPage: false, timeout: 5000 });
 
         let visualChange = false;
         let diffFilename: string | null = null;
@@ -1123,7 +1133,7 @@ async function previewScenario(url: string, scenarioConfig: string | ScenarioSte
 
         const filename = `preview-${Date.now()}.png`;
         const filepath = getPublicPath('screenshots', filename);
-        await page.screenshot({ path: filepath, fullPage: true });
+        await page.screenshot({ path: filepath, fullPage: false, timeout: 5000 });
         screenshotFilename = filename;
 
     } catch (e) {

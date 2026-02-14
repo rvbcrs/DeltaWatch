@@ -185,15 +185,13 @@ function Settings() {
     const handleFetchModels = async () => {
         setFetchingModels(true);
         try {
-            const res = await authFetch(`${API_BASE}/api/models`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    provider: settings.ai_provider,
-                    apiKey: settings.ai_api_key,
-                    baseUrl: settings.ai_base_url
-                })
+            const query = new URLSearchParams({
+                provider: settings.ai_provider || 'openai',
+                apiKey: settings.ai_api_key || '',
+                baseUrl: settings.ai_base_url || ''
             });
+
+            const res = await authFetch(`${API_BASE}/api/ai/models?${query.toString()}`);
             const data = await res.json();
             if (res.ok) {
                 setFetchedModels(data.data);

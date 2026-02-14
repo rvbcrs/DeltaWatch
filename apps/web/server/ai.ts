@@ -128,26 +128,44 @@ Summary:
 async function getModels(provider: string, apiKey: string | undefined, baseUrl: string | undefined): Promise<string[]> {
     if (provider === 'openai') {
         if (!apiKey) throw new Error("API Key required for OpenAI");
-        const openai = new OpenAI({ apiKey: apiKey });
-        const models: string[] = [];
-        for await (const model of openai.models.list()) {
-            models.push(model.id);
+        
+        const config: OpenAIConfig = { apiKey: apiKey };
+        if (baseUrl) {
+            config.baseURL = baseUrl;
+            console.log(`AI: Using custom BaseURL for OpenAI: ${baseUrl}`);
         }
-        return models.sort();
+
+        try {
+            console.log("AI: Fetching models from OpenAI API...");
+            const openai = new OpenAI(config);
+            const models: string[] = [];
+            for await (const model of openai.models.list()) {
+                models.push(model.id);
+            }
+            console.log(`AI: Successfully fetched ${models.length} models.`);
+            return models.sort();
+        } catch (e: any) {
+            console.error("AI: OpenAI Model Fetch Error:", e.message);
+            if (e.cause) console.error("AI: Error Cause:", e.cause);
+            throw new Error(`OpenAI Connection Failed: ${e.message}`);
+        }
     } else if (provider === 'ollama') {
         let url = baseUrl || 'http://localhost:11434';
         if (url.endsWith('/v1')) url = url.slice(0, -3);
         if (url.endsWith('/')) url = url.slice(0, -1);
 
         try {
+            console.log(`AI: Fetching models from Ollama at ${url}...`);
             const res = await fetch(`${url}/api/tags`);
             if (res.ok) {
                 const data = await res.json() as OllamaTagsResponse;
                 return data.models.map(m => m.name).sort();
             } else {
-                throw new Error(`Ollama connection failed: ${res.statusText}`);
+                throw new Error(`Ollama connection failed: ${res.status} ${res.statusText}`);
             }
-        } catch (e) {
+        } catch (e: any) {
+            console.error(`AI: Ollama fetch failed for ${url}:`, e.message);
+            // Fallback to OpenAI SDK for Ollama v1 compat
             try {
                 const openai = new OpenAI({
                     apiKey: 'ollama',
@@ -158,8 +176,8 @@ async function getModels(provider: string, apiKey: string | undefined, baseUrl: 
                     models.push(model.id);
                 }
                 return models.sort();
-            } catch (e2) {
-                throw new Error("Could not fetch models from Ollama. Ensure it's running.");
+            } catch (e2: any) {
+                throw new Error(`Could not fetch models from Ollama at ${url}. Ensure it's reachable from within the container (use Host IP, not localhost). Error: ${e.message}`);
             }
         }
     }

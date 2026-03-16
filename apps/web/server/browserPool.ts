@@ -24,9 +24,9 @@ interface PooledBrowser {
     createdAt: number;
 }
 
-const MAX_BROWSERS = 3;
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes - recycle browsers
+const MAX_BROWSERS = 2;
+const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes - free Docker memory faster
+const MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes - recycle browsers to prevent memory bloat
 const MAX_CONSECUTIVE_ERRORS = 3; // Force reset pool after 3 consecutive errors
 
 let browserPool: PooledBrowser[] = [];

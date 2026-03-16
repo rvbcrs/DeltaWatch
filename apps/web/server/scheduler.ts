@@ -184,7 +184,7 @@ export const INTERVAL_MINUTES: Record<string, number> = {
 const MAX_CONSECUTIVE_FAILURES = 10; // Increased tolerance (was 8)
 const BASE_COOLDOWN_MINUTES = 30;    // Base cooldown: 30 minutes after max failures (faster recovery)
 const MAX_COOLDOWN_MINUTES = 480;    // Max cooldown: 8 hours
-const OVERALL_CHECK_TIMEOUT = 120000; // 120 seconds max per monitor check (increased from 45s to allow for retries)
+const OVERALL_CHECK_TIMEOUT = 60000; // 60 seconds max per monitor check
 const CONCURRENT_CHECK_LIMIT = 1;    // Max 1 monitor checking at same time (reduced from 2 for stability)
 
 // Concurrency limiter for sequential processing
@@ -222,13 +222,18 @@ async function withRetry<T>(
         try {
             return await fn();
         } catch (error: any) {
-            const isRetryable = 
+            // Don't retry if browser/context/page was closed (e.g. by timeout abort)
+            const isClosed =
+                error.message?.includes('has been closed') ||
+                error.message?.includes('Target closed');
+
+            const isRetryable = !isClosed && (
                 error.message?.includes('net::') ||
                 error.message?.includes('timeout') ||
                 error.message?.includes('ECONNREFUSED') ||
                 error.message?.includes('ECONNRESET') ||
                 error.message?.includes('ETIMEDOUT') ||
-                error.message?.includes('Navigation failed');
+                error.message?.includes('Navigation failed'));
             
             if (!isRetryable || attempt === maxRetries) {
                 logError('scheduler', `${operation} failed after ${attempt} attempt(s): ${error.message}`, error.stack, monitorId);
@@ -299,25 +304,30 @@ async function checkMonitors(): Promise<void> {
                     
                     let pooledContext: { context: BrowserContext; release: (destroy?: boolean) => Promise<void> } | undefined;
                     let shouldDestroy = false;
+                    let timeoutHandle: NodeJS.Timeout;
 
                     try {
                         // Acquire a FRESH context for THIS specific check
-                        // This ensures "maximal separation" - if this check crashes/hangs, 
-                        // it won't affect the others.
                         pooledContext = await acquireBrowser();
 
                         // Wrap each check in an overall timeout to prevent indefinite blocking
                         await Promise.race([
                             checkSingleMonitor(monitor, pooledContext.context),
-                            new Promise<void>((_, reject) => 
-                                setTimeout(() => {
-                                    shouldDestroy = true; // Mark for destruction if we timed out
+                            new Promise<void>((_, reject) => {
+                                timeoutHandle = setTimeout(() => {
+                                    shouldDestroy = true;
+                                    // Close context IMMEDIATELY to abort all in-flight page operations.
+                                    // Without this, checkSingleMonitor continues as a zombie process,
+                                    // blocking the event loop and causing node-cron missed executions.
+                                    try { pooledContext?.context.close().catch(() => {}); } catch (e) {}
                                     reject(new Error('Overall check timeout exceeded'));
-                                }, OVERALL_CHECK_TIMEOUT)
-                            )
+                                }, OVERALL_CHECK_TIMEOUT);
+                            })
                         ]);
+                        clearTimeout(timeoutHandle!);
                         lastSuccessfulCheck = Date.now();
                     } catch (timeoutErr: any) {
+                        clearTimeout(timeoutHandle!);
                         console.error(`[${monitor.name || monitor.id}] ${timeoutErr.message}`);
                         schedulerErrors++;
                         
@@ -387,26 +397,28 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
         response = await withRetry(
             async () => {
                 try {
-                    const resp = await page!.goto(monitor.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-                    await page!.waitForTimeout(2000);
+                    const resp = await page!.goto(monitor.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await page!.waitForTimeout(1000);
                     try {
-                        await page!.waitForLoadState('networkidle', { timeout: 5000 });
+                        await page!.waitForLoadState('networkidle', { timeout: 3000 });
                     } catch (e) {
                         // networkidle is optional, ignore failure
                     }
                     return resp;
-                } catch (e) {
+                } catch (e: any) {
+                    // Don't attempt fallback if browser/context was closed (timeout abort)
+                    if (e.message?.includes('has been closed') || e.message?.includes('Target closed')) throw e;
                     console.log(`[${monitorName}] domcontentloaded failed, trying commit (least strict)`);
-                    const resp = await page!.goto(monitor.url, { waitUntil: 'commit', timeout: 30000 });
-                    await page!.waitForTimeout(5000); // Wait longer for hydration if we only got commit
+                    const resp = await page!.goto(monitor.url, { waitUntil: 'commit', timeout: 15000 });
+                    await page!.waitForTimeout(3000);
                     return resp;
                 }
             },
-            { 
-                maxRetries: 2, 
-                baseDelay: 1000, 
-                monitorId: monitor.id, 
-                operation: `Navigation to ${monitor.url}` 
+            {
+                maxRetries: 1,
+                baseDelay: 1000,
+                monitorId: monitor.id,
+                operation: `Navigation to ${monitor.url}`
             }
         );
         httpStatus = response ? response.status() : null;
@@ -1047,7 +1059,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
             db.run(`UPDATE monitors SET last_check = ? WHERE id = ?`, [new Date().toISOString(), monitor.id]);
         }
     } finally {
-        if (page) await page.close();
+        try { if (page && !page.isClosed()) await page.close(); } catch (e) { /* page/context already closed by timeout */ }
         if (pooledContext) await pooledContext.release();
     }
 }

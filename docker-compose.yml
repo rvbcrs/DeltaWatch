@@ -1,5 +1,4 @@
-version: '3.8'
-
+name: deltawatch
 services:
   deltawatch:
     image: deltawatch:latest
@@ -8,12 +7,32 @@ services:
     restart: unless-stopped
     ports:
       - "3005:3000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
-      - DATA_DIR=/app/apps/web/server/data
+      - DATA_DIR=/app/data
     volumes:
-      - ./apps/web/server/data:/app/apps/web/server/data
+      - /DATA/AppData/deltawatch/data:/app/data
     deploy:
       resources:
         limits:
-          memory: 2048M
+          memory: 1024M
+    labels:
+      icon: https://github.com/rvbcrs/DeltaWatch/blob/b634eb8708ec0d9583a91ddc3cff05c29292e35f/apps/web/client/public/logo_new.png?raw=true
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: deltawatch
+  description:
+    en_us: Advanced web monitoring solution with AI detection and visual diffing.
+  author: rvbcrs
+  category: Tools
+  icon: https://github.com/rvbcrs/DeltaWatch/blob/b634eb8708ec0d9583a91ddc3cff05c29292e35f/apps/web/client/public/logo_new.png?raw=true
+  title:
+    en_us: DeltaWatch
+  scheme: http
+  port_map: "3005"
+  index: /

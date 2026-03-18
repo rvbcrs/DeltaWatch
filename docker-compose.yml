@@ -17,7 +17,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
+          memory: 2048M
     labels:
       icon: https://github.com/rvbcrs/DeltaWatch/blob/b634eb8708ec0d9583a91ddc3cff05c29292e35f/apps/web/client/public/logo_new.png?raw=true
 

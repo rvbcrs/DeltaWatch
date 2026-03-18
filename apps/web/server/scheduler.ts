@@ -109,6 +109,8 @@ const isBrowserError = (errorMessage: string): boolean => {
         'Navigation failed because page was closed',
         'Protocol error',
         'Target closed',
+        'Target crashed',
+        'Page crashed',
         'Session closed',
         'Connection refused',
         'Browser disconnected',
@@ -392,6 +394,18 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
     
     try {
         page = await context.newPage();
+
+        // Block heavy resources for non-visual monitors to reduce memory usage and prevent Chromium OOM crashes
+        if (monitor.type !== 'visual') {
+            await page.route('**/*', (route) => {
+                const resourceType = route.request().resourceType();
+                if (['image', 'font', 'media', 'stylesheet'].includes(resourceType)) {
+                    return route.abort();
+                }
+                return route.continue();
+            });
+            console.log(`[${monitorName}] Lightweight mode: blocking images, fonts, media, CSS`);
+        }
 
         let response;
         response = await withRetry(

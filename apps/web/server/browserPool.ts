@@ -43,7 +43,7 @@ async function getLaunchOptions(): Promise<LaunchOptions> {
         )
     );
     
-    const launchOptions: LaunchOptions = { 
+    const launchOptions: LaunchOptions = {
         headless: true,
         args: [
             '--no-sandbox',
@@ -53,7 +53,13 @@ async function getLaunchOptions(): Promise<LaunchOptions> {
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--enable-unsafe-swiftshader' // Fix for WebGL warning (crbug.com/242999)
+            '--enable-unsafe-swiftshader', // Fix for WebGL warning (crbug.com/242999)
+            // Memory optimization for Docker containers
+            '--renderer-process-limit=1', // Limit renderer processes (safer than --single-process)
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-default-apps',
+            '--js-flags=--max-old-space-size=256' // Limit JS heap to 256MB per tab
         ]
     };
     

@@ -15,6 +15,7 @@ import { logError, logWarn, logInfo } from './logger';
 import { extractPrice, formatPrice } from './priceExtractor';
 import type { Monitor, Settings, Keyword } from './types';
 import { getNotificationHtml, getDigestHtml, getKeywordAlertHtml, getDowntimeAlertHtml, getAiSummaryHtml } from './templates';
+import { isTrackerUrl, newDwid, killBrowserProcesses } from './browserPool';
 
 let cachedUsername: string | undefined = undefined;
 async function getCachedUsername() {
@@ -137,6 +138,7 @@ const isBrowserError = (errorMessage: string): boolean => {
 
 interface LaunchOptions {
     headless: boolean;
+    args?: string[];
     proxy?: {
         server: string;
         username?: string;
@@ -153,6 +155,20 @@ interface ScenarioStep {
 interface NotifyConfig {
     method?: string;
     threshold?: string;
+    email?: boolean;
+    push?: boolean;
+}
+
+// Per-monitor channel toggles from notify_config; absent or unparseable = all enabled
+function getNotifyChannels(monitor: Monitor): { email: boolean; push: boolean } {
+    try {
+        const cfg: NotifyConfig = typeof monitor.notify_config === 'string'
+            ? JSON.parse(monitor.notify_config)
+            : (monitor.notify_config || {});
+        return { email: cfg?.email !== false, push: cfg?.push !== false };
+    } catch (e) {
+        return { email: true, push: true };
+    }
 }
 
 interface ProxySettings {
@@ -397,14 +413,37 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
 
         // Block heavy resources for non-visual monitors to reduce memory usage and prevent Chromium OOM crashes
         if (monitor.type !== 'visual') {
+            const baseDomain = new URL(monitor.url).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+
             await page.route('**/*', (route) => {
-                const resourceType = route.request().resourceType();
+                const request = route.request();
+                const resourceType = request.resourceType();
+
+                // Block heavy static resources
                 if (['image', 'font', 'media', 'stylesheet'].includes(resourceType)) {
                     return route.abort();
                 }
+
+                // Block known ad/tracking scripts and XHR, but keep functional third-party
+                // JS (CDN app bundles, WAF tokens) — sites like marktplaats serve their own
+                // frontend from another domain and break when all third-party is blocked
+                if (['script', 'xhr', 'fetch'].includes(resourceType)) {
+                    try {
+                        const reqDomain = new URL(request.url()).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+                        if (reqDomain !== baseDomain && isTrackerUrl(request.url())) {
+                            return route.abort();
+                        }
+                    } catch (e) {}
+                }
+
+                // Block websocket/eventsource (live features not needed for text extraction)
+                if (['websocket', 'eventsource'].includes(resourceType)) {
+                    return route.abort();
+                }
+
                 return route.continue();
             });
-            console.log(`[${monitorName}] Lightweight mode: blocking images, fonts, media, CSS`);
+            console.log(`[${monitorName}] Lightweight mode: blocking images, fonts, CSS, tracker scripts`);
         }
 
         let response;
@@ -495,6 +534,13 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
 
         await page.waitForTimeout(3000);
 
+        // Hash-fragment filters (e.g. marktplaats #f:...) are applied client-side after
+        // load via an extra XHR + re-render; wait for that to settle before extracting
+        if (monitor.url.includes('#')) {
+            try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) {}
+            await page.waitForTimeout(1000);
+        }
+
         // Extract content
         let text: string | null = null;
         if (monitor.selector) {
@@ -561,7 +607,8 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                                     sendNotification(
                                         `${t('action_required', lang)}: ${monitorName}`,
                                         plainText,
-                                        htmlMessage, null, null
+                                        htmlMessage, null, null,
+                                        { channels: getNotifyChannels(monitor) }
                                     );
                                 } else {
                                     console.log(`[${monitorName}] AI suggested "${newSelector}" but it was not found on page.`);
@@ -934,7 +981,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                 }
 
                 if (shouldNotify) {
-                    sendNotification(subject, message, htmlMessage, diffText, diffImagePath);
+                    sendNotification(subject, message, htmlMessage, diffText, diffImagePath, { channels: getNotifyChannels(monitor) });
                 } else {
                     console.log(`[${monitorName}] Notification suppressed by rule`);
                 }
@@ -1000,7 +1047,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
                         const message = `${alertMessage}\n\nMonitor: ${identifier}\nURL: ${monitor.url}`;
                         const username = await getCachedUsername();
                         const htmlMessage = getKeywordAlertHtml(monitor, alertMessage, username);
-                        sendNotification(subject, message, htmlMessage, null, null);
+                        sendNotification(subject, message, htmlMessage, null, null, { channels: getNotifyChannels(monitor) });
                     }
                 }
             } catch (e) {
@@ -1016,7 +1063,7 @@ async function checkSingleMonitor(monitor: Monitor, context: BrowserContext | nu
             const message = `HTTP ${httpStatus} Error\n\nMonitor: ${identifier}\nURL: ${monitor.url}\nStatus Code: ${httpStatus}`;
             const username = await getCachedUsername();
             const htmlMessage = getDowntimeAlertHtml(monitor, httpStatus, username);
-            sendNotification(subject, message, htmlMessage, null, null);
+            sendNotification(subject, message, htmlMessage, null, null, { channels: getNotifyChannels(monitor) });
         }
 
         // Cleanup old screenshot
@@ -1125,7 +1172,8 @@ async function executeScenario(page: Page, scenario: ScenarioStep[]): Promise<vo
 async function previewScenario(url: string, scenarioConfig: string | ScenarioStep[] | null, proxySettings: ProxySettings | null = null): Promise<string | null> {
     console.log(`Previewing scenario for ${url}`);
 
-    const launchOptions: LaunchOptions = { headless: true };
+    const previewDwid = newDwid('preview');
+    const launchOptions: LaunchOptions = { headless: true, args: [`--dwid=${previewDwid}`] };
     if (proxySettings && proxySettings.server) {
         launchOptions.proxy = { server: proxySettings.server };
         if (proxySettings.username && proxySettings.password) {
@@ -1166,7 +1214,8 @@ async function previewScenario(url: string, scenarioConfig: string | ScenarioSte
         console.error("Preview Error:", e);
         throw e;
     } finally {
-        await browser.close();
+        try { await browser.close(); } catch (e) {}
+        killBrowserProcesses(previewDwid);
     }
 
     return screenshotFilename;

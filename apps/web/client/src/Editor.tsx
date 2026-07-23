@@ -15,6 +15,8 @@ interface SelectedElement {
 interface NotifyConfig {
     method: string;
     threshold: string;
+    email?: boolean;
+    push?: boolean;
 }
 
 interface MessageEvent extends Event {
@@ -559,6 +561,33 @@ function Editor() {
       setStep('config');
   };
 
+  // Per-monitor notification channel toggles, shared by the three sidebar variants
+  const notificationChannelsBlock = (
+    <div>
+        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">{t('editor.notifications', 'Notifications')}</label>
+        <div className="flex gap-4">
+            <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                <input
+                    type="checkbox"
+                    className="accent-blue-500"
+                    checked={notifyConfig.email !== false}
+                    onChange={(e) => setNotifyConfig({ ...notifyConfig, email: e.target.checked })}
+                />
+                {t('editor.notify_email', 'Email')}
+            </label>
+            <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                <input
+                    type="checkbox"
+                    className="accent-blue-500"
+                    checked={notifyConfig.push !== false}
+                    onChange={(e) => setNotifyConfig({ ...notifyConfig, push: e.target.checked })}
+                />
+                {t('editor.notify_push', 'Push')}
+            </label>
+        </div>
+    </div>
+  );
+
   return (
     <div className="flex h-screen w-full bg-[#0d1117] flex-col text-white font-sans">
       {/* Header / Nav */}
@@ -846,6 +875,8 @@ function Editor() {
                                     </div>
                                 </div>
 
+                                {notificationChannelsBlock}
+
                                 {/* Browser Interactions */}
                                 <div className="border-t border-gray-700 pt-4 mt-4">
                                     <button 
@@ -1055,6 +1086,8 @@ function Editor() {
                                     </select>
                                 </div>
 
+                                {notificationChannelsBlock}
+
                                 {/* Browser Interactions */}
                                 <div className="border-t border-gray-700 pt-4 mt-4">
                                     <button 
@@ -1162,6 +1195,8 @@ function Editor() {
                                         <option value="0 0 * * 0">{t('editor.intervals.1w')}</option>
                                     </select>
                                 </div>
+
+                                {notificationChannelsBlock}
 
                                 {/* Browser Interactions */}
                                 <div className="border-t border-gray-700 pt-4 mt-4">

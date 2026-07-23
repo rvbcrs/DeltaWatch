@@ -16,6 +16,7 @@ import * as auth from './auth';
 import { summarizeChange, getModels, analyzePage } from './ai';
 import { startScheduler, checkSingleMonitor, previewScenario, executeScenario, checkDigest } from './scheduler';
 import { sendNotification } from './notifications';
+import { isTrackerUrl, newDwid, killBrowserProcesses } from './browserPool';
 import { getTestEmailHtml } from './templates';
 import { logError, logWarn, logInfo, getLogs, cleanupLogs, clearAllLogs, deleteLog } from './logger';
 import type { Monitor, Settings, CheckHistory, AuthRequest } from './types';
@@ -437,9 +438,10 @@ app.post('/api/ai/analyze-page', (req, res, next) => {
         if (!htmlContent) {
             console.log('[AI Analyze] Fetching HTML server-side for:', url);
             
-            const browser = await chromium.launch({ 
+            const analyzeDwid = newDwid('analyze');
+            const browser = await chromium.launch({
                 headless: true,
-                args: ['--disable-blink-features=AutomationControlled']
+                args: ['--disable-blink-features=AutomationControlled', `--dwid=${analyzeDwid}`]
             });
             const context = await browser.newContext({
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -474,10 +476,11 @@ app.post('/api/ai/analyze-page', (req, res, next) => {
                     htmlContent = '';
                 }
             } finally {
-                await browser.close();
+                try { await browser.close(); } catch (e) {}
+                killBrowserProcesses(analyzeDwid);
             }
         }
-        
+
         const result = await analyzePage(url, htmlContent, prompt);
         res.json({ message: 'success', data: result });
     } catch (e: any) {
@@ -1013,6 +1016,7 @@ app.get('/proxy', async (req: Request, res: Response) => {
     }
 
     let browserInstance: Browser | null = null;
+    const proxyDwid = newDwid('proxy');
 
     try {
         console.log('[Server] Launching Ephemeral Browser...');
@@ -1024,7 +1028,8 @@ app.get('/proxy', async (req: Request, res: Response) => {
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
-                '--mute-audio'
+                '--mute-audio',
+                `--dwid=${proxyDwid}`
             ]
         });
 
@@ -1057,12 +1062,41 @@ app.get('/proxy', async (req: Request, res: Response) => {
             console.log(`[Browser Network Error] ${request.url()} : ${request.failure()?.errorText}`);
         });
 
+        // Block ad/tracker scripts and heavy media so the preview loads fast. Functional
+        // third-party JS (CDN app bundles, WAF tokens) stays: sites like marktplaats need
+        // it to apply #hash filters. Images/CSS stay for the picker.
+        const proxyBaseDomain = new URL(url).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+        await page.route('**/*', (route) => {
+            const request = route.request();
+            const resourceType = request.resourceType();
+
+            if (['media', 'font', 'websocket', 'eventsource'].includes(resourceType)) {
+                return route.abort();
+            }
+
+            if (['script', 'xhr', 'fetch'].includes(resourceType)) {
+                try {
+                    const reqDomain = new URL(request.url()).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+                    if (reqDomain !== proxyBaseDomain && isTrackerUrl(request.url())) return route.abort();
+                } catch (e) {}
+            }
+
+            return route.continue();
+        });
+
         try {
             // Use domcontentloaded for speed, and just wait a fixed time for hydration.
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
             
             // Wait for basic hydration
             await page.waitForTimeout(4000);
+
+            // Hash-fragment filters (e.g. marktplaats #f:...) are applied client-side
+            // after load; wait for the resulting XHR/re-render before snapshotting
+            if (url.includes('#')) {
+                try { await page.waitForLoadState('networkidle', { timeout: 8000 }); } catch (e) {}
+                await page.waitForTimeout(1000);
+            }
 
             // ... (rest of logic: inject scripts, etc. - keep existing)
 
@@ -1111,8 +1145,13 @@ app.get('/proxy', async (req: Request, res: Response) => {
                 const elementsToRemove = document.querySelectorAll('video, audio, object, embed, iframe, noscript, meta[http-equiv="Content-Security-Policy"], meta[http-equiv="X-Frame-Options"]');
                 elementsToRemove.forEach(el => el.remove());
 
-                const overlaysToRemove = document.querySelectorAll('#preact-border-shadow-host, .sc-pyqe1m-4, .sc-12saxh8-0, [data-testid="cookie-banner"]');
+                const overlaysToRemove = document.querySelectorAll('#preact-border-shadow-host, .sc-pyqe1m-4, .sc-12saxh8-0, [data-testid="cookie-banner"], [id^="sp_message_container"], .sp-veil');
                 overlaysToRemove.forEach(el => el.remove());
+
+                // Sourcepoint scroll-lock: html.sp-message-open { overflow: hidden !important } beats
+                // our injected overflow:auto on specificity, so drop the class itself
+                document.documentElement.classList.remove('sp-message-open');
+                document.body.classList.remove('sp-message-open');
 
                 // Inject selector script
                 const script = document.createElement('script');
@@ -1151,12 +1190,16 @@ app.get('/proxy', async (req: Request, res: Response) => {
             res.status(500).send('Error fetching page: ' + error.message);
         }
     } finally {
-        if (browserInstance) {
-            console.log('[Server] Closing Ephemeral Browser...');
-            await browserInstance.close();
-        }
+        // Free the slot before closing the browser: a hanging close() was leaving
+        // proxyRequestsInFlight stuck at 1, turning every next preview into a 503
         proxyRequestsInFlight--;
         console.log(`[Proxy] Request completed (${proxyRequestsInFlight}/${MAX_CONCURRENT_PROXY} active)`);
+        if (browserInstance) {
+            console.log('[Server] Closing Ephemeral Browser...');
+            browserInstance.close()
+                .catch((e) => console.error('[Proxy] Browser close failed:', e.message))
+                .finally(() => killBrowserProcesses(proxyDwid));
+        }
     }
 });
 
@@ -1975,3 +2018,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// playwright-extra's stealth plugin leaves CDP calls in flight when a browser is
+// force-closed by the check timeout; the resulting rejection has no owner and was
+// killing the whole process (~weekly "cdpSession.send: Target ... closed" crashes).
+// For a monitoring daemon: log and keep running instead of dying.
+process.on('unhandledRejection', (reason: any) => {
+    console.error('[Process] Unhandled rejection (non-fatal):', reason?.message || reason);
+});

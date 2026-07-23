@@ -66,6 +66,7 @@ WORKDIR /app
 # We do NOT install python/make/g++ here to save space
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    procps \
     && npx playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 

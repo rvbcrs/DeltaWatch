@@ -8,6 +8,8 @@ import type { Settings } from './types';
 interface SendNotificationOptions {
     type?: 'email' | 'push' | 'webhook';
     force_instant?: boolean;
+    // Per-monitor channel toggles from notify_config; absent = enabled
+    channels?: { email?: boolean; push?: boolean };
 }
 
 function sendRequest(url: string, method: string, headers: Record<string, string | number>, body: string): Promise<string> {
@@ -70,16 +72,17 @@ async function queueEmailNotification(subject: string, message: string, htmlMess
 }
 
 async function sendNotification(
-    subject: string, 
-    message: string, 
-    htmlMessage: string | null = null, 
-    diff: string | SendNotificationOptions | null = null, 
-    imagePath: string | null = null
+    subject: string,
+    message: string,
+    htmlMessage: string | null = null,
+    diff: string | SendNotificationOptions | null = null,
+    imagePath: string | null = null,
+    opts: SendNotificationOptions = {}
 ): Promise<void> {
-    let options: SendNotificationOptions = {};
+    let options: SendNotificationOptions = opts;
     // Handle overload: if diff is an object and not null, treat as options
     if (diff && typeof diff === 'object') {
-        options = diff;
+        options = { ...diff, ...opts };
         diff = null;
     }
 
@@ -90,16 +93,18 @@ async function sendNotification(
 
         // Check explicit type filter or default to all enabled
         const targetType = options.type;
+        const channels = options.channels || {};
 
-        if (settings.email_enabled && (!targetType || targetType === 'email')) {
+        if (settings.email_enabled && channels.email !== false && (!targetType || targetType === 'email')) {
+            // Digest is a daily summary on top of instant mails, not a replacement:
+            // queue for the digest AND send right away
             if (settings.digest_enabled && !options.force_instant) {
                 promises.push(queueEmailNotification(subject, message, htmlMessage));
-            } else {
-                promises.push(sendEmail(settings, subject, message, htmlMessage));
             }
+            promises.push(sendEmail(settings, subject, message, htmlMessage));
         }
 
-        if (settings.push_enabled && (!targetType || targetType === 'push')) {
+        if (settings.push_enabled && channels.push !== false && (!targetType || targetType === 'push')) {
             promises.push(sendPush(settings, message, diff as string | null, imagePath));
         }
 

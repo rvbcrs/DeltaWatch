@@ -1,8 +1,9 @@
 name: deltawatch
 services:
   deltawatch:
-    image: deltawatch:latest
-    pull_policy: never
+    image: dockreg.ramonvanbruggen.nl/deltawatch:latest
+    # Reap defunct child processes (Node runs as PID 1 without this)
+    init: true
     container_name: deltawatch
     restart: unless-stopped
     ports:

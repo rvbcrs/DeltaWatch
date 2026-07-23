@@ -1,11 +1,73 @@
 import { chromium } from 'playwright-extra';
 import type { Browser, BrowserContext } from 'playwright-core';
 import stealth from 'puppeteer-extra-plugin-stealth';
+import { execFile } from 'child_process';
 import { logError, logInfo, logWarn } from './logger';
 import db from './db';
 import type { Settings } from './types';
 
 chromium.use(stealth());
+
+// --- Zombie prevention ---------------------------------------------------
+// browser.close() is a CDP goodbye: once the connection is gone ("disconnected
+// unexpectedly") it is a no-op and the Chromium process tree lives on. Observed
+// in production: 11 orphaned Chromium instances, swap thrashing, TBs of disk
+// reads. Every launch is therefore tagged with a unique --dwid=<label>-<ts>
+// switch (Chromium ignores unknown switches) so teardown can SIGKILL the exact
+// process tree, and a sweep reaps anything tagged that outlived its purpose.
+
+export function newDwid(label: string): string {
+    return `${label}-${Date.now()}`;
+}
+
+export function killBrowserProcesses(dwid: string): void {
+    // -f matches the full command line; the timestamp makes the tag unique
+    execFile('pkill', ['-9', '-f', `dwid=${dwid}`], () => {});
+}
+
+const SWEEP_MAX_AGE_MS = 30 * 60 * 1000;
+
+// Safety net: kill any tagged Chromium tree older than 30 min. Pool browsers
+// are recycled after 15 min and ephemeral ones live minutes, so anything this
+// old is an orphan. Untagged browsers (visible debug session) are never touched.
+function sweepOrphanBrowsers(): void {
+    execFile('pgrep', ['-af', 'dwid='], (err, out) => {
+        if (err || !out) return; // no matches or no procps
+        const seen = new Set<string>();
+        for (const line of out.split('\n')) {
+            const m = line.match(/dwid=([a-z]+-(\d+))/);
+            if (m) seen.add(m[1]);
+        }
+        for (const dwid of seen) {
+            const ts = parseInt(dwid.split('-').pop() || '0', 10);
+            if (Date.now() - ts > SWEEP_MAX_AGE_MS) {
+                logWarn('browser', `Sweeping orphaned browser process tree (dwid=${dwid})`);
+                killBrowserProcesses(dwid);
+            }
+        }
+    });
+}
+// -------------------------------------------------------------------------
+
+// Ad/tracking/analytics domains blocked in lightweight mode. Only known trackers:
+// functional third-party hosts (CDN app bundles like hzcdn.io, WAF token endpoints
+// like awswaf.com) must stay allowed — blocking all third-party scripts breaks
+// JS-driven sites (e.g. marktplaats never applies its #hash filters).
+const TRACKER_DOMAINS = [
+    'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+    'google-analytics.com', 'googletagmanager.com', 'adtrafficquality.google',
+    'pubmatic.com', 'criteo.com', 'adnxs.com', 'amazon-adsystem.com',
+    'rubiconproject.com', 'openx.net', 'taboola.com', 'outbrain.com',
+    'hotjar.com', 'datadoghq-browser-agent.com', 'sentry.io', 'newrelic.com',
+    'facebook.net', 'scorecardresearch.com', 'quantserve.com',
+];
+
+export function isTrackerUrl(url: string): boolean {
+    try {
+        const host = new URL(url).hostname;
+        return TRACKER_DOMAINS.some(d => host === d || host.endsWith('.' + d));
+    } catch (e) { return false; }
+}
 
 interface LaunchOptions {
     headless: boolean;
@@ -19,6 +81,7 @@ interface LaunchOptions {
 
 interface PooledBrowser {
     browser: Browser;
+    dwid: string;
     inUse: boolean;
     lastUsed: number;
     createdAt: number;
@@ -81,23 +144,28 @@ async function getLaunchOptions(): Promise<LaunchOptions> {
  */
 async function createBrowser(): Promise<PooledBrowser> {
     const launchOptions = await getLaunchOptions();
+    const dwid = newDwid('pool');
+    launchOptions.args = [...(launchOptions.args || []), `--dwid=${dwid}`];
     const browser = await chromium.launch(launchOptions);
-    
+
     const pooledBrowser: PooledBrowser = {
         browser,
+        dwid,
         inUse: false,
         lastUsed: Date.now(),
         createdAt: Date.now()
     };
-    
+
     // Handle unexpected browser close
     browser.on('disconnected', async () => {
+        // Disconnected != dead: the process tree can outlive the CDP connection
+        killBrowserProcesses(dwid);
         const index = browserPool.findIndex(pb => pb.browser === browser);
         if (index !== -1) {
             browserPool.splice(index, 1);
             consecutiveErrors++;
             logWarn('browser', `Browser instance disconnected unexpectedly, removed from pool (errors: ${consecutiveErrors})`);
-            
+
             // Auto-reset pool if too many disconnects
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
                 logWarn('browser', `Too many browser disconnects (${consecutiveErrors}), forcing pool reset`);
@@ -147,6 +215,7 @@ export async function acquireBrowser(): Promise<{ context: BrowserContext; relea
                 } catch (e) {
                     // Ignore close errors
                 }
+                killBrowserProcesses(pb.dwid);
                 browserPool.splice(i, 1);
                 logWarn('browser', `Removed unhealthy browser, pool size: ${browserPool.length}`);
             }
@@ -194,6 +263,7 @@ export async function acquireBrowser(): Promise<{ context: BrowserContext; relea
             } catch (e) {
                 // Ignore close errors
             }
+            killBrowserProcesses(pooledBrowser!.dwid);
             // Remove from pool
             const idx = browserPool.indexOf(pooledBrowser!);
             if (idx !== -1) browserPool.splice(idx, 1);
@@ -231,8 +301,11 @@ async function cleanupIdleBrowsers(): Promise<void> {
                 logWarn('browser', `Failed to close browser: ${e.message}`);
                 browserPool.splice(i, 1);
             }
+            killBrowserProcesses(pb.dwid);
         }
     }
+
+    sweepOrphanBrowsers();
 }
 
 /**
@@ -256,8 +329,9 @@ export async function shutdownPool(): Promise<void> {
         } catch (e) {
             // Ignore close errors during shutdown
         }
+        killBrowserProcesses(pb.dwid);
     }
-    
+
     browserPool = [];
     logInfo('browser', 'Browser pool shut down complete');
 }
@@ -289,8 +363,9 @@ export async function forceResetPool(): Promise<void> {
         } catch (e) {
             // Ignore errors
         }
+        killBrowserProcesses(pb.dwid);
     }
-    
+
     browserPool = [];
     consecutiveErrors = 0;
     logInfo('browser', 'Browser pool force reset complete');

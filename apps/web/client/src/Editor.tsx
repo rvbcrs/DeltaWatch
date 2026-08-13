@@ -41,6 +41,8 @@ function Editor() {
   const { t } = useTranslation();
   
   const [isSelecting, setIsSelecting] = useState(true);
+  const [aiFindPrompt, setAiFindPrompt] = useState('');
+  const [aiFinding, setAiFinding] = useState(false);
 
   const [name, setName] = useState('')
   const [notifyConfig, setNotifyConfig] = useState<NotifyConfig>({ method: 'all', threshold: '' });
@@ -465,6 +467,34 @@ function Editor() {
     }
   };
 
+  // Describe what to monitor in plain language; the AI proposes a selector —
+  // also finds content inside closed popups the visual picker can't reach
+  const handleAiFind = async () => {
+    if (!url || !aiFindPrompt.trim() || aiFinding) return;
+    setAiFinding(true);
+    try {
+        const response = await authFetch(`${API_BASE}/api/ai/analyze-page`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, prompt: aiFindPrompt })
+        });
+        const json = await response.json();
+        if (response.ok && json.data?.selector) {
+            setSelectedElement({ selector: json.data.selector, text: '' });
+            if (!name && json.data.name) setName(json.data.name);
+            const iframe = document.querySelector('iframe') as HTMLIFrameElement | null;
+            iframe?.contentWindow?.postMessage({ type: 'TEST_SELECTOR', payload: json.data.selector }, '*');
+            showToast(t('editor.toasts.ai_found', 'AI suggested a selector — check the highlighted text'), 'success');
+        } else {
+            showToast(json.error || t('editor.toasts.ai_find_failed', 'AI could not find a matching element'), 'error');
+        }
+    } catch (e: any) {
+        showToast(e.message, 'error');
+    } finally {
+        setAiFinding(false);
+    }
+  };
+
 
   const handleIframeLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
     const iframe = e.currentTarget;
@@ -792,6 +822,24 @@ function Editor() {
                                     title="Test selector"
                                 >
                                     🔍
+                                </button>
+                            </div>
+                            <div className="flex gap-2 mb-2">
+                                <input
+                                    type="text"
+                                    value={aiFindPrompt}
+                                    onChange={(e) => setAiFindPrompt(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') handleAiFind(); }}
+                                    className="flex-1 bg-[#0d1117] p-2 rounded text-xs border border-gray-700 text-gray-300 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                    placeholder={t('editor.ai_find_placeholder', 'Describe it, e.g. "sizes and stock"')}
+                                />
+                                <button
+                                    onClick={handleAiFind}
+                                    disabled={aiFinding || !aiFindPrompt.trim()}
+                                    className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-500 transition whitespace-nowrap disabled:opacity-50"
+                                    title={t('editor.ai_find', 'Find with AI')}
+                                >
+                                    {aiFinding ? '…' : '✨'}
                                 </button>
                             </div>
                             <div className="mb-4">

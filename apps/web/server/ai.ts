@@ -4,6 +4,22 @@ import * as cheerio from 'cheerio';
 import db from './db';
 import type { Settings } from './types';
 
+// Strip everything without selector signal (scripts, styles, media, bulky URL/style
+// attributes) before truncating: on big product pages (measured: 745k raw, 226k after
+// light stripping) the relevant element sits far beyond a naive 15-40k cutoff.
+function condenseHtml(html: string, cap = 150000): string {
+    return (html || '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+        .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<(?:img|source|link|meta|iframe|video|audio|picture)\b[^>]*>/gi, '')
+        .replace(/\s(?:src|srcset|href|style|sizes|loading|integrity|crossorigin|aria-[\w-]+|on\w+)="[^"]*"/gi, '')
+        .replace(/\s+/g, ' ')
+        .substring(0, cap);
+}
+
 interface OpenAIConfig {
     apiKey: string;
     baseURL?: string;
@@ -277,7 +293,7 @@ async function findSelector(htmlSnapshot: string, oldSelector: string, oldText: 
 
         const openai = new OpenAI(config);
 
-        const truncHtml = (htmlSnapshot || '').substring(0, 15000);
+        const truncHtml = condenseHtml(htmlSnapshot);
 
         const prompt = `You are a CSS Selector Repair Expert.
 
@@ -347,19 +363,29 @@ async function analyzePage(htmlSnapshot: string, url: string, userPrompt: string
 
         const openai = new OpenAI(config);
 
-        const truncHtml = (htmlSnapshot || '').substring(0, 15000);
+        const truncHtml = condenseHtml(htmlSnapshot);
+
+        // The user's description IS the task; the generic "most important content"
+        // goal is only the fallback — as a buried hint the model ignored it and
+        // kept picking the price
+        const goal = userPrompt
+            ? `I want to monitor the following on this page: "${userPrompt}". Find the element that BEST matches this description — NOT the price or other content, unless the description asks for it.`
+            : `I want to monitor the MOST IMPORTANT content on this page (e.g. Product Price, Stock Status, Article Title, Server Status).`;
 
         const prompt = `You are an expert Website configuration assistant.
 I have visited a URL: ${url}
-I want to monitor the MOST IMPORTANT content on this page (e.g. Product Price, Stock Status, Article Title, Server Status).
+${goal}
 
 Your task:
 1. Analyze the HTML snippet I provide.
-2. Identify the single most relevant element to monitor.
+2. Identify the single element that best fulfills my goal above.
 3. Return a JSON object (and ONLY JSON) with:
    - "name": A short descriptive name (e.g. "Nintendo Switch Price")
    - "selector": The BEST, ROBUST CSS selector for that element.
    - "type": "text" (default) or "visual" (if it's a chart or complex area).
+
+NOTE: The element may live inside a hidden/closed panel or popup (e.g. a size picker) — that is fine, hidden elements can be monitored. Do not skip an element just because it is not visible.
+NOTE: If the description asks for MULTIPLE values (sizes, all options, stock per variant, a list), select the container element that wraps ALL of them (e.g. the ul or wrapper div), never just the first item.
 
 CRITICAL SELECTOR RULES:
 - NEVER use IDs that contain numbers (like #price_123, #sec_discounted_price_50589)! These are dynamic and will break.
@@ -373,8 +399,6 @@ BEFORE RESPONDING, VERIFY:
 1. Search the HTML snippet for your chosen selector
 2. Confirm the selector text EXISTS EXACTLY in the snippet
 3. If you cannot find a suitable non-dynamic selector, use "body" as fallback
-
-User Hint: "${userPrompt || 'Find the most important changeable content like a price or status'}"
 
 HTML Snippet:
 ${truncHtml}

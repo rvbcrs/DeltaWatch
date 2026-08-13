@@ -77,7 +77,9 @@
             "ai_error": "AI Analyse mislukt: {{error}}",
             "price_detected": "💰 Prijs gevonden: {{price}}",
             "price_not_found": "❌ Geen prijs gevonden",
-            "price_scan_error": "❌ Fout bij scannen prijs"
+            "price_scan_error": "❌ Fout bij scannen prijs",
+            "ai_found": "AI stelde een selector voor — controleer de gemarkeerde tekst",
+            "ai_find_failed": "AI kon geen passend element vinden"
         },
         "price_thresholds": "Prijs Drempels",
         "min_price": "Min Prijs",
@@ -100,7 +102,9 @@
         },
         "notifications": "Notificaties",
         "notify_email": "E-mail",
-        "notify_push": "Push"
+        "notify_push": "Push",
+        "ai_find": "Vind met AI",
+        "ai_find_placeholder": "Omschrijf het, bijv. \"maten en voorraad\""
     },
     "auth": {
         "toasts": {

@@ -481,7 +481,7 @@ app.post('/api/ai/analyze-page', (req, res, next) => {
             }
         }
 
-        const result = await analyzePage(url, htmlContent, prompt);
+        const result = await analyzePage(htmlContent, url, prompt);
         res.json({ message: 'success', data: result });
     } catch (e: any) {
         console.error('AI Analyze Error:', e);
@@ -1064,13 +1064,14 @@ app.get('/proxy', async (req: Request, res: Response) => {
 
         // Block ad/tracker scripts and heavy media so the preview loads fast. Functional
         // third-party JS (CDN app bundles, WAF tokens) stays: sites like marktplaats need
-        // it to apply #hash filters. Images/CSS stay for the picker.
+        // it to apply #hash filters. Images/CSS/fonts stay for the picker — icon fonts
+        // render checkboxes/hearts, blocking them shows empty squares.
         const proxyBaseDomain = new URL(url).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
         await page.route('**/*', (route) => {
             const request = route.request();
             const resourceType = request.resourceType();
 
-            if (['media', 'font', 'websocket', 'eventsource'].includes(resourceType)) {
+            if (['media', 'websocket', 'eventsource'].includes(resourceType)) {
                 return route.abort();
             }
 

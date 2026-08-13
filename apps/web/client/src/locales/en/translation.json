@@ -77,7 +77,9 @@
             "ai_error": "AI Analysis failed: {{error}}",
             "price_detected": "💰 Price detected: {{price}}",
             "price_not_found": "❌ No price found",
-            "price_scan_error": "❌ Error scanning price"
+            "price_scan_error": "❌ Error scanning price",
+            "ai_found": "AI suggested a selector — check the highlighted text",
+            "ai_find_failed": "AI could not find a matching element"
         },
         "price_thresholds": "Price Thresholds",
         "min_price": "Min Price",
@@ -100,7 +102,9 @@
         },
         "notifications": "Notifications",
         "notify_email": "Email",
-        "notify_push": "Push"
+        "notify_push": "Push",
+        "ai_find": "Find with AI",
+        "ai_find_placeholder": "Describe it, e.g. \"sizes and stock\""
     },
     "auth": {
         "toasts": {
